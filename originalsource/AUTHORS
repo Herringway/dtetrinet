@@ -1,0 +1,28 @@
+People who contributed to tetrinet(-pb), in alphabetical order (if you are
+missing here or some of your contributions is, tell pasky):
+
+
+Andrew Church <achurch@achurch.org>
+	Vanilla tetrinet maintainer
+	The original implementation ;-)
+
+Chris Clark <clach04@yahoo.com>
+	Counterclockwise rotation
+
+Christoph Weiss <weissch@informatik.tu-muenchen.de>
+	Teamplay fix
+
+Cougar <cougar@random.ee>
+	IPv6 support
+
+Gadall <gadall@hotmail.com>
+	FreeBSD compilation fixes
+
+Gerfried Fuchs <alfie@ist.org>
+	Random hacking
+
+Petr Baudis <pasky@ucw.cz>
+	-pb branch maintainer
+	Multichannel support
+	Tetrifast support
+	Random hacking
