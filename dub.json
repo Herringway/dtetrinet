@@ -1,0 +1,32 @@
+{
+	"name": "dtetrinet",
+	"authors": [
+		"Cameron"
+	],
+	"description": "D port of tetrinet",
+	"copyright": "Copyright © 2017, Cameron",
+	"license": "proprietary",
+	"libs": ["ncurses"],
+	"versions": ["HAVE_IPV6"],
+	"dependencies": {
+		"ncurses": "~master"
+	},
+	"configurations": [
+		{
+			"name": "client",
+			"targetType": "executable",
+			"versions": ["client"]
+		},
+		{
+			"name": "client-xwin",
+			"targetType": "executable",
+			"versions": ["client", "xwin"]
+		},
+		{
+			"name": "server",
+			"targetType": "executable",
+			"targetName": "dtetrinet-server",
+			"versions": ["server"]
+		}
+	]
+}

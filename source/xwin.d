@@ -1,35 +1,83 @@
-/* Tetrinet for Linux, by Andrew Church <achurch@achurch.org>
- * This program is public domain.
- *
- * Text terminal I/O routines.
- */
+module dtetrinet.xwin;
 
-#define _GNU_SOURCE /* strsignal() - FIXME!!! --pasky */
+import dtetrinet.io;
+import dtetrinet.tetrinet;
+import dtetrinet.tetris;
+import dtetrinet.server;
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <ctype.h>
-#include <curses.h>
-#include <errno.h>
-#include <signal.h>
-#include <sys/time.h>
-#include "tetrinet.h"
-#include "tetris.h"
-#include "io.h"
+import core.stdc.string;
+import core.stdc.stdio;
+import core.stdc.stdlib;
+import core.stdc.ctype;
+import core.stdc.errno;
+import core.stdc.signal;
 
-/*************************************************************************/
+import core.sys.posix.signal;
+import core.sys.posix.sys.select;
 
-#define MY_HLINE	(fancy ? ACS_HLINE : '-')
-#define MY_VLINE	(fancy ? ACS_VLINE : '|')
-#define MY_ULCORNER	(fancy ? ACS_ULCORNER : '+')
-#define MY_URCORNER	(fancy ? ACS_URCORNER : '+')
-#define MY_LLCORNER	(fancy ? ACS_LLCORNER : '+')
-#define MY_LRCORNER	(fancy ? ACS_LRCORNER : '+')
+import deimos.ncurses;
 
-#define MY_HLINE2	(fancy ? (ACS_HLINE | A_BOLD) : '=')
-#define MY_BOLD		(fancy ? A_BOLD : 0)
+
+struct TextBuffer {
+    int x, y, width, height;
+    int line;
+    WINDOW *win;	/* NULL if not currently displayed */
+    char **text;
+}
+
+__gshared {
+	/* Size of the screen */
+	int scrwidth, scrheight;
+		
+	/* Is color available? */
+	int has_color;
+
+	TextBuffer plinebuf, gmsgbuf, attdefbuf;
+	/* Window for typing in-game text, and its coordinates: */
+
+	WINDOW *gmsg_inputwin;
+	int gmsg_inputpos, gmsg_inputheight;
+
+	/* Are we on a wide screen (>=92 columns)? */
+	int wide_screen = 0;
+
+	/* Field display X/Y coordinates. */
+	const int[2] own_coord = [1,0];
+	int[2][5] other_coord =	/* Recomputed based on screen width */
+		[ [30,0], [47,0], [64,0], [47,24], [64,24] ];
+		
+	/* Position of the status window. */
+	const int[2] status_coord     = [29,25];
+	const int[2] next_coord       = [41,24];
+	const int[2] alt_status_coord = [29,2];
+	const int[2] alt_next_coord   = [30,8];
+
+	/* Position of the attacks/defenses window. */
+	const int[2] attdef_coord = [28,38];
+	const int[2] alt_attdef_coord = [28,24];
+
+	/* Position of the text window.  X coordinate is ignored. */
+	const int[2] field_text_coord = [0,47];
+
+
+	/* Information for drawing blocks.  Color attributes are added to blocks in
+	 * the setup_fields() routine. */
+	int[15] tile_chars = [ ' ','#','#','#','#','#','a','c','n','r','s','b','g','q','o' ];
+
+	/* Are we redrawing the entire display? */
+	int field_redraw = 0;
+}
+
+alias MY_HLINE = ACS_HLINE;
+alias MY_VLINE = ACS_VLINE;
+alias MY_ULCORNER = ACS_ULCORNER;
+alias MY_URCORNER = ACS_URCORNER;
+alias MY_LLCORNER = ACS_LLCORNER;
+alias MY_LRCORNER = ACS_LRCORNER;
+auto MY_HLINE2() { return ACS_HLINE | A_BOLD; }
+alias MY_BOLD = A_BOLD;
+
+enum K_INVALID = -1;
 
 /*************************************************************************/
 /******************************* Input stuff *****************************/
@@ -39,10 +87,10 @@
  * waiting.  Return -2 if we run out of time with no input.
  */
 
-static int wait_for_input(int msec)
+extern(C) int wait_for_input(int msec)
 {
     fd_set fds;
-    struct timeval tv;
+    timeval tv;
     int c;
     static int escape = 0;
 
@@ -51,7 +99,7 @@ static int wait_for_input(int msec)
     FD_SET(server_sock, &fds);
     tv.tv_sec = msec/1000;
     tv.tv_usec = (msec*1000) % 1000000;
-    while (select(server_sock+1, &fds, NULL, NULL, msec<0 ? NULL : &tv) < 0) {
+    while (select(server_sock+1, &fds, null, null, msec<0 ? null : &tv) < 0) {
 	if (errno != EINTR)
 	    perror("Warning: select() failed");
     }
@@ -114,41 +162,11 @@ static int wait_for_input(int msec)
 }
 
 /*************************************************************************/
-/****************************** Output stuff *****************************/
-/*************************************************************************/
-
-/* Size of the screen */
-static int scrwidth, scrheight;
-
-/* Is color available? */
-static int has_color;
-
-/*************************************************************************/
-
-/* Text buffers: */
-
-typedef struct {
-    int x, y, width, height;
-    int line;
-    WINDOW *win;	/* NULL if not currently displayed */
-    char **text;
-} TextBuffer;
-
-static TextBuffer plinebuf, gmsgbuf, attdefbuf;
-
-/*************************************************************************/
-
-/* Window for typing in-game text, and its coordinates: */
-
-static WINDOW *gmsg_inputwin;
-static int gmsg_inputpos, gmsg_inputheight;
-
-/*************************************************************************/
 /*************************************************************************/
 
 /* Clean up the screen on exit. */
 
-static void screen_cleanup()
+extern(C) void screen_cleanup()
 {
     wmove(stdscr, scrheight-1, 0);
     wrefresh(stdscr);
@@ -162,39 +180,39 @@ static void screen_cleanup()
  * cleanup routine called), except for TSTP, which does a clean suspend.
  */
 
-static void (*old_tstp)(int sig);
+extern(C)__gshared void function(int sig) nothrow @system @nogc old_tstp_x;
 
-static void sighandler(int sig)
+extern(C) void sighandler(int sig) @nogc @system nothrow
 {
     if (sig != SIGTSTP) {
-	endwin();
-	if (sig != SIGINT)
-	    fprintf(stderr, "%s\n", strsignal(sig));
+	assumeNogc!endwin();
+	//if (sig != SIGINT)
+	//    fprintf(stderr, "%s\n", strsignal(sig));
 	exit(1);
     }
-    endwin();
-    signal(SIGTSTP, old_tstp);
+    assumeNogc!endwin();
+    signal(SIGTSTP, old_tstp_x);
     raise(SIGTSTP);
-    doupdate();
-    signal(SIGTSTP, sighandler);
+    assumeNogc!doupdate();
+    signal(SIGTSTP, &sighandler);
 }
 
 /*************************************************************************/
 /*************************************************************************/
 
-#define MAXCOLORS	256
+enum MAXCOLORS =	256;
 
-static int colors[MAXCOLORS][2] = { {-1,-1} };
+int[MAXCOLORS][2] colors = [ [-1,-1] ];
 
 /* Return a color attribute value. */
 
-static long getcolor(int fg, int bg)
+extern(C) long getcolor(int fg, int bg)
 {
     int i;
 
     if (colors[0][0] < 0) {
 	start_color();
-	memset(colors, -1, sizeof(colors));
+	memset(colors.ptr, -1, colors.sizeof);
 	colors[0][0] = COLOR_WHITE;
 	colors[0][1] = COLOR_BLACK;
     }
@@ -206,7 +224,7 @@ static long getcolor(int fg, int bg)
     }
     for (i = 1; i < MAXCOLORS; i++) {
 	if (colors[i][0] < 0) {
-	    if (init_pair(i, fg, bg) == ERR)
+	    if (init_pair(cast(short)i, cast(short)fg, cast(short)bg) == ERR)
 		continue;
 	    colors[i][0] = fg;
 	    colors[i][1] = bg;
@@ -221,7 +239,7 @@ static long getcolor(int fg, int bg)
 
 /* Set up the screen stuff. */
 
-static void screen_setup(void)
+extern(C) void screen_setup()
 {
     /* Avoid messy keyfield signals while we're setting up */
     signal(SIGINT, SIG_IGN);
@@ -231,38 +249,38 @@ static void screen_setup(void)
     initscr();
     cbreak();
     noecho();
-    nodelay(stdscr, TRUE);
-    keypad(stdscr, TRUE);
-    leaveok(stdscr, TRUE);
-    if ((has_color = has_colors()))
+    nodelay(stdscr, 1);
+    keypad(stdscr, 1);
+    leaveok(stdscr, 1);
+	has_color = has_colors();
+    if (has_color)
 	start_color();
     getmaxyx(stdscr, scrheight, scrwidth);
     scrwidth--;  /* Don't draw in last column--this can cause scroll */
 
     /* Cancel all this when we exit. */
-    atexit(screen_cleanup);
+    atexit(&screen_cleanup);
 
     /* Catch signals so we can exit cleanly. */
-    signal(SIGINT, sighandler);
-    signal(SIGQUIT, sighandler);
-    signal(SIGTERM, sighandler);
-    signal(SIGHUP, sighandler);
-    signal(SIGSEGV, sighandler);
-    signal(SIGABRT, sighandler);
-    signal(SIGIOT, sighandler);
-    signal(SIGTRAP, sighandler);
-    signal(SIGBUS, sighandler);
-    signal(SIGFPE, sighandler);
-    signal(SIGUSR1, sighandler);
-    signal(SIGUSR2, sighandler);
-    signal(SIGALRM, sighandler);
-#ifdef SIGSTKFLT
-    signal(SIGSTKFLT, sighandler);
-#endif
-    signal(SIGTSTP, sighandler);
-    signal(SIGXCPU, sighandler);
-    signal(SIGXFSZ, sighandler);
-    signal(SIGVTALRM, sighandler);
+    signal(SIGINT, &sighandler);
+    signal(SIGQUIT, &sighandler);
+    signal(SIGTERM, &sighandler);
+    signal(SIGHUP, &sighandler);
+    signal(SIGSEGV, &sighandler);
+    signal(SIGABRT, &sighandler);
+    signal(SIGTRAP, &sighandler);
+    signal(SIGBUS, &sighandler);
+    signal(SIGFPE, &sighandler);
+    signal(SIGUSR1, &sighandler);
+    signal(SIGUSR2, &sighandler);
+    signal(SIGALRM, &sighandler);
+	version(SIGSTKFLT) {
+    	signal(SIGSTKFLT, &sighandler);
+	}
+    signal(SIGTSTP, &sighandler);
+    signal(SIGXCPU, &sighandler);
+    signal(SIGXFSZ, &sighandler);
+    signal(SIGVTALRM, &sighandler);
 
     /* Broken pipes don't want to bother us at all. */
     signal(SIGPIPE, SIG_IGN);
@@ -272,7 +290,7 @@ static void screen_setup(void)
 
 /* Redraw everything on the screen. */
 
-static void screen_refresh(void)
+extern(C) void screen_refresh()
 {
     if (gmsg_inputwin)
 	touchline(stdscr, gmsg_inputpos, gmsg_inputheight);
@@ -290,9 +308,9 @@ static void screen_refresh(void)
 
 /* Like screen_refresh(), but clear the screen first. */
 
-static void screen_redraw(void)
+extern(C) void screen_redraw()
 {
-    clearok(stdscr, TRUE);
+    clearok(stdscr, 1);
     screen_refresh();
 }
 
@@ -302,25 +320,25 @@ static void screen_redraw(void)
 
 /* Put a line of text in a text buffer. */
 
-static void outline(TextBuffer *buf, const char *s)
+extern(C) void outline(TextBuffer *buf, const char *s)
 {
-    if (buf->line == buf->height) {
-	if (buf->win)
-	    scroll(buf->win);
-	memmove(buf->text, buf->text+1, (buf->height-1) * sizeof(char *));
-	buf->line--;
+    if (buf.line == buf.height) {
+	if (buf.win)
+	    scroll(buf.win);
+	memmove(buf.text, buf.text+1, (buf.height-1) * (char*).sizeof);
+	buf.line--;
     }
-    if (buf->win)
-	mvwaddstr(buf->win, buf->line, 0, s);
-    if (s != buf->text[buf->line])   /* check for restoring display */
-	buf->text[buf->line] = strdup(s);
-    buf->line++;
+    if (buf.win)
+	mvwaddstr(buf.win, buf.line, 0, s);
+    if (s != buf.text[buf.line])   /* check for restoring display */
+	buf.text[buf.line] = strdup(s);
+    buf.line++;
 }
 
-static void draw_text(int bufnum, const char *s)
+extern(C) void draw_text(int bufnum, const(char) *s)
 {
-    char str[1024];	/* hopefully scrwidth < 1024 */
-    const char *t;
+    char[1024] str;	/* hopefully scrwidth < 1024 */
+    const(char) *t;
     int indent = 0;
     int x = 0, y = 0;
     TextBuffer *buf;
@@ -331,38 +349,38 @@ static void draw_text(int bufnum, const char *s)
 	case BUFFER_ATTDEF: buf = &attdefbuf; break;
 	default: return;
     }
-    if (!buf->text)
+    if (!buf.text)
 	return;
-    if (buf->win) {
+    if (buf.win) {
 	getyx(stdscr, y, x);
 	attrset(getcolor(COLOR_WHITE, COLOR_BLACK));
     }
     while (*s && isspace(*s))
 	s++;
-    while (strlen(s) > buf->width - indent) {
-	t = s + buf->width - indent;
+    while (strlen(s) > buf.width - indent) {
+	t = s + buf.width - indent;
 	while (t >= s && !isspace(*t))
 	    t--;
 	while (t >= s && isspace(*t))
 	    t--;
 	t++;
 	if (t < s)
-	    t = s + buf->width - indent;
+	    t = s + buf.width - indent;
 	if (indent > 0)
-	    sprintf(str, "%*s", indent, "");
-	strncpy(str+indent, s, t-s);
+	    sprintf(str.ptr, "%*s".ptr, indent, "".ptr);
+	strncpy(str.ptr+indent, s, t-s);
 	str[t-s+indent] = 0;
-	outline(buf, str);
+	outline(buf, str.ptr);
 	indent = 2;
 	while (isspace(*t))
 	    t++;
 	s = t;
     }
     if (indent > 0)
-	sprintf(str, "%*s", indent, "");
-    strcpy(str+indent, s);
-    outline(buf, str);
-    if (buf->win) {
+	sprintf(str.ptr, "%*s".ptr, indent, "".ptr);
+    strcpy(str.ptr+indent, s);
+    outline(buf, str.ptr);
+    if (buf.win) {
 	move(y, x);
 	screen_refresh();
     }
@@ -372,7 +390,7 @@ static void draw_text(int bufnum, const char *s)
 
 /* Clear the contents of a text buffer. */
 
-static void clear_text(int bufnum)
+extern(C) void clear_text(int bufnum)
 {
     TextBuffer *buf;
     int i;
@@ -383,17 +401,17 @@ static void clear_text(int bufnum)
 	case BUFFER_ATTDEF: buf = &attdefbuf; break;
 	default: return;
     }
-    if (buf->text) {
-	for (i = 0; i < buf->height; i++) {
-	    if (buf->text[i]) {
-		free(buf->text[i]);
-		buf->text[i] = NULL;
+    if (buf.text) {
+	for (i = 0; i < buf.height; i++) {
+	    if (buf.text[i]) {
+		free(buf.text[i]);
+		buf.text[i] = null;
 	    }
 	}
-	buf->line = 0;
+	buf.line = 0;
     }
-    if (buf->win) {
-	werase(buf->win);
+    if (buf.win) {
+	werase(buf.win);
 	screen_refresh();
     }
 }
@@ -402,33 +420,33 @@ static void clear_text(int bufnum)
 
 /* Restore the contents of the given text buffer. */
 
-static void restore_text(TextBuffer *buf)
+extern(C) void restore_text(TextBuffer *buf)
 {
-    buf->line = 0;
-    while (buf->line < buf->height && buf->text[buf->line])
-	outline(buf, buf->text[buf->line]);
+    buf.line = 0;
+    while (buf.line < buf.height && buf.text[buf.line])
+	outline(buf, buf.text[buf.line]);
 }
 
 /*************************************************************************/
 
 /* Open a window for the given text buffer. */
 
-static void open_textwin(TextBuffer *buf)
+extern(C) void open_textwin(TextBuffer *buf)
 {
-    if (buf->height <= 0 || buf->width <= 0) {
-	char str[256];
+    if (buf.height <= 0 || buf.width <= 0) {
+	char[256] str;
 	move(scrheight-1, 0);
-	snprintf(str, sizeof(str), "ERROR: bad textwin size (%d,%d)",
-			buf->width, buf->height);
-	addstr(str);
+	snprintf(str.ptr, str.sizeof, "ERROR: bad textwin size (%d,%d)",
+			buf.width, buf.height);
+	addstr(str.ptr);
 	exit(1);
     }
-    if (!buf->win) {
-	buf->win = subwin(stdscr, buf->height, buf->width, buf->y, buf->x);
-	scrollok(buf->win, TRUE);
+    if (!buf.win) {
+	buf.win = subwin(stdscr, buf.height, buf.width, buf.y, buf.x);
+	scrollok(buf.win, 1);
     }
-    if (!buf->text)
-	buf->text = calloc(buf->height, sizeof(char *));
+    if (!buf.text)
+	*buf.text = cast(char*)calloc(buf.height, (char*).sizeof);
     else
 	restore_text(buf);
 }
@@ -437,62 +455,24 @@ static void open_textwin(TextBuffer *buf)
 
 /* Close the window for the given text buffer, if it's open. */
 
-static void close_textwin(TextBuffer *buf)
+extern(C) void close_textwin(TextBuffer *buf)
 {
-    if (buf->win) {
-	delwin(buf->win);
-	buf->win = NULL;
+    if (buf.win) {
+		delwin(buf.win);
+		buf.win = null;
     }
 }
 
-/*************************************************************************/
-/************************ Field drawing routines *************************/
-/*************************************************************************/
-
-/* Are we on a wide screen (>=92 columns)? */
-static int wide_screen = 0;
-
-/* Field display X/Y coordinates. */
-static const int own_coord[2] = {1,0};
-static int other_coord[5][2] =	/* Recomputed based on screen width */
-    { {30,0}, {47,0}, {64,0}, {47,24}, {64,24} };
-
-/* Position of the status window. */
-static const int status_coord[2]     = {29,25};
-static const int next_coord[2]       = {41,24};
-static const int alt_status_coord[2] = {29,2};
-static const int alt_next_coord[2]   = {30,8};
-
-/* Position of the attacks/defenses window. */
-static const int attdef_coord[2] = {28,28};
-static const int alt_attdef_coord[2] = {28,24};
-
-/* Position of the text window.  X coordinate is ignored. */
-static const int field_text_coord[2] = {0,47};
-
-/* Information for drawing blocks.  Color attributes are added to blocks in
- * the setup_fields() routine. */
-static int tile_chars[15] =
-    { ' ','#','#','#','#','#','a','c','n','r','s','b','g','q','o' };
-
-/* Are we redrawing the entire display? */
-static int field_redraw = 0;
 
 /*************************************************************************/
 /*************************************************************************/
 
 /* Set up the field display. */
 
-static void draw_own_field(void);
-static void draw_other_field(int player);
-static void draw_status(void);
-static void draw_specials(void);
-static void draw_gmsg_input(const char *s, int pos);
-
-static void setup_fields(void)
+extern(C) void setup_fields()
 {
     int i, j, x, y, base, delta, attdefbot;
-    char buf[32];
+    char[32] buf;
 
     if (!(tile_chars[0] & A_ATTRIBUTES)) {
 	for (i = 1; i < 15; i++)
@@ -505,7 +485,7 @@ static void setup_fields(void)
     }
 
     field_redraw = 1;
-    leaveok(stdscr, TRUE);
+    leaveok(stdscr, 1);
     close_textwin(&plinebuf);
     clear();
     attrset(getcolor(COLOR_WHITE,COLOR_BLACK));
@@ -534,9 +514,9 @@ static void setup_fields(void)
 	    hline(MY_HLINE2, scrwidth);
 	    attrset(MY_BOLD);
 	    move(scrheight-1, 0);
-	    addstr("F1=Show Fields  F2=Partyline  F3=Winlist");
+	    addstr("F1=Show Fields  F2=Partyline  F3=Winlist".ptr);
 	    move(scrheight-1, scrwidth-8);
-	    addstr("F10=Quit");
+	    addstr("F10=Quit".ptr);
 	    attrset(A_NORMAL);
 	    gmsgbuf.y = field_text_coord[1]+1;
 	    gmsgbuf.height = scrheight - field_text_coord[1] - 3;
@@ -554,12 +534,12 @@ static void setup_fields(void)
 
     x = own_coord[0];
     y = own_coord[1];
-    sprintf(buf, "%d", my_playernum);
-    mvaddstr(y, x-1, buf);
+    sprintf(buf.ptr, "%d", my_playernum);
+    mvaddstr(y, x-1, buf.ptr);
     for (i = 2; i < FIELD_HEIGHT*2 && players[my_playernum-1][i-2]; i++)
 	mvaddch(y+i, x-1, players[my_playernum-1][i-2]);
-    if (teams[my_playernum-1] != '\0') {
-	mvaddstr(y, x+FIELD_WIDTH*2+2, "T");
+    if (teams[my_playernum-1][0] != '\0') {
+	mvaddstr(y, x+FIELD_WIDTH*2+2, "T".ptr);
 	for (i = 2; i < FIELD_HEIGHT*2 && teams[my_playernum-1][i-2]; i++)
 	    mvaddch(y+i, x+FIELD_WIDTH*2+2, teams[my_playernum-1][i-2]);
     }
@@ -572,7 +552,7 @@ static void setup_fields(void)
     hline(MY_HLINE, FIELD_WIDTH*2);
     move(y+FIELD_HEIGHT*2, x+FIELD_WIDTH*2+1);
     addch(MY_LRCORNER);
-    mvaddstr(y+FIELD_HEIGHT*2+2, x, "Specials:");
+    mvaddstr(y+FIELD_HEIGHT*2+2, x, "Specials:".ptr);
     draw_own_field();
     draw_specials();
 
@@ -589,26 +569,26 @@ static void setup_fields(void)
 	move(y+FIELD_HEIGHT, x+FIELD_WIDTH+1);
 	addch(MY_LRCORNER);
 	if (j+1 >= my_playernum) {
-	    sprintf(buf, "%d", j+2);
-	    mvaddstr(y, x-1, buf);
+	    sprintf(buf.ptr, "%d", j+2);
+	    mvaddstr(y, x-1, buf.ptr);
 	    if (players[j+1]) {
 		for (i = 0; i < FIELD_HEIGHT-2 && players[j+1][i]; i++)
 		    mvaddch(y+i+2, x-1, players[j+1][i]);
-		if (teams[j+1] != '\0') {
-		    mvaddstr(y, x+FIELD_WIDTH+2, "T");
+		if (teams[j+1][0] != '\0') {
+		    mvaddstr(y, x+FIELD_WIDTH+2, "T".ptr);
 		    for (i = 0; i < FIELD_HEIGHT-2 && teams[j+1][i]; i++)
 			mvaddch(y+i+2, x+FIELD_WIDTH+2, teams[j+1][i]);
 		}
 	    }
 	    draw_other_field(j+2);
 	} else {
-	    sprintf(buf, "%d", j+1);
-	    mvaddstr(y, x-1, buf);
+	    sprintf(buf.ptr, "%d", j+1);
+	    mvaddstr(y, x-1, buf.ptr);
 	    if (players[j]) {
 		for (i = 0; i < FIELD_HEIGHT-2 && players[j][i]; i++)
 		    mvaddch(y+i+2, x-1, players[j][i]);
-		if (teams[j] != '\0') {
-		    mvaddstr(y, x+FIELD_WIDTH+2, "T");
+		if (teams[j][0] != '\0') {
+		    mvaddstr(y, x+FIELD_WIDTH+2, "T".ptr);
 		    for (i = 0; i < FIELD_HEIGHT-2 && teams[j][i]; i++)
 			mvaddch(y+i+2, x+FIELD_WIDTH+2, teams[j][i]);
 		}
@@ -620,11 +600,11 @@ static void setup_fields(void)
     if (wide_screen) {
 	x = alt_status_coord[0];
 	y = alt_status_coord[1];
-	mvaddstr(y, x, "Lines:");
-	mvaddstr(y+1, x, "Level:");
+	mvaddstr(y, x, "Lines:".ptr);
+	mvaddstr(y+1, x, "Level:".ptr);
 	x = alt_next_coord[0];
 	y = alt_next_coord[1];
-	mvaddstr(y-2, x-1, "Next piece:");
+	mvaddstr(y-2, x-1, "Next piece:".ptr);
 	move(y-1, x-1);
 	addch(MY_ULCORNER);
 	hline(MY_HLINE, 8);
@@ -640,9 +620,9 @@ static void setup_fields(void)
     } else {
 	x = status_coord[0];
 	y = status_coord[1];
-	mvaddstr(y-1, x, "Next piece:");
-	mvaddstr(y, x, "Lines:");
-	mvaddstr(y+1, x, "Level:");
+	mvaddstr(y-1, x, "Next piece:".ptr);
+	mvaddstr(y, x, "Lines:".ptr);
+	mvaddstr(y+1, x, "Level:".ptr);
     }
     if (playing_game)
 	draw_status();
@@ -655,8 +635,8 @@ static void setup_fields(void)
 
     if (gmsg_inputwin) {
 	delwin(gmsg_inputwin);
-	gmsg_inputwin = NULL;
-	draw_gmsg_input(NULL, -1);
+	gmsg_inputwin = null;
+	draw_gmsg_input(null, -1);
     }
 
     screen_refresh();
@@ -667,19 +647,19 @@ static void setup_fields(void)
 
 /* Display the player's own field. */
 
-static void draw_own_field(void)
+extern(C) void draw_own_field()
 {
     int x, y, x0, y0;
     Field *f = &fields[my_playernum-1];
-    int shadow[4] = { -1, -1, -1, -1 };
+    int[4] shadow = [ -1, -1, -1, -1 ];
 
     if (dispmode != MODE_FIELDS)
 	return;
 
     /* XXX: Code duplication with tetris.c:draw_piece(). --pasky */
     if (playing_game && cast_shadow) {
-	int y = current_y - piecedata[current_piece][current_rotation].hot_y;
-	char *shape = (char *) piecedata[current_piece][current_rotation].shape;
+	y = current_y - piecedata[current_piece][current_rotation].hot_y;
+	char *shape = cast(char*) piecedata[current_piece][current_rotation].shape;
 	int i, j;
 
 	for (j = 0; j < 4; j++) {
@@ -698,18 +678,18 @@ static void draw_own_field(void)
     y0 = own_coord[1];
     for (y = 0; y < 22; y++) {
 	for (x = 0; x < 12; x++) {
-	    int c = tile_chars[(int) (*f)[y][x]];
+	    int c = tile_chars[cast(int) (*f)[y][x]];
 
 	    if (playing_game && cast_shadow) {
 		PieceData *piece = &piecedata[current_piece][current_rotation];
-		int piece_x = current_x - piece->hot_x;
+		int piece_x = current_x - piece.hot_x;
 
 		if (x >= piece_x && x <= piece_x + 3
 			&& shadow[(x - piece_x)] >= 0
 			&& shadow[(x - piece_x)] < y
 			&& ((c & 0x7f) == ' ')) {
-		    c = (c & (~0x7f)) | '.'
-			| getcolor(COLOR_BLACK, COLOR_BLACK) | A_BOLD;
+		    c = cast(int)((c & (~0x7f)) | '.'
+			| getcolor(COLOR_BLACK, COLOR_BLACK) | A_BOLD);
 		}
 	    }
 
@@ -721,8 +701,8 @@ static void draw_own_field(void)
     }
     if (gmsg_inputwin) {
 	delwin(gmsg_inputwin);
-	gmsg_inputwin = NULL;
-	draw_gmsg_input(NULL, -1);
+	gmsg_inputwin = null;
+	draw_gmsg_input(null, -1);
     }
     if (!field_redraw)
 	screen_refresh();
@@ -732,7 +712,7 @@ static void draw_own_field(void)
 
 /* Display another player's field. */
 
-static void draw_other_field(int player)
+extern(C) void draw_other_field(int player)
 {
     int x, y, x0, y0;
     Field *f;
@@ -748,33 +728,35 @@ static void draw_other_field(int player)
     for (y = 0; y < 22; y++) {
 	move(y0+y, x0);
 	for (x = 0; x < 12; x++) {
-	    addch(tile_chars[(int) (*f)[y][x]]);
+	    addch(tile_chars[cast(int) (*f)[y][x]]);
 	}
     }
     if (gmsg_inputwin) {
 	delwin(gmsg_inputwin);
-	gmsg_inputwin = NULL;
-	draw_gmsg_input(NULL, -1);
+	gmsg_inputwin = null;
+	draw_gmsg_input(null, -1);
     }
     if (!field_redraw)
 	screen_refresh();
 }
 
+
 /*************************************************************************/
 
 /* Display the current game status (level, lines, next piece). */
 
-static void draw_status(void)
+extern(C) void draw_status()
 {
     int x, y, i, j;
-    char buf[32], shape[4][4];
+    char[32] buf;
+	char[4][4] shape;
 
     x = wide_screen ? alt_status_coord[0] : status_coord[0];
     y = wide_screen ? alt_status_coord[1] : status_coord[1];
-    sprintf(buf, "%d", lines>99999 ? 99999 : lines);
-    mvaddstr(y, x+7, buf);
-    sprintf(buf, "%d", levels[my_playernum]);
-    mvaddstr(y+1, x+7, buf);
+    sprintf(buf.ptr, "%d", lines>99999 ? 99999 : lines);
+    mvaddstr(y, x+7, buf.ptr);
+    sprintf(buf.ptr, "%d", levels[my_playernum]);
+    mvaddstr(y+1, x+7, buf.ptr);
     x = wide_screen ? alt_next_coord[0] : next_coord[0];
     y = wide_screen ? alt_next_coord[1] : next_coord[1];
     if (get_shape(next_piece, 0, shape) == 0) {
@@ -784,13 +766,13 @@ static void draw_status(void)
 	    for (i = 0; i < 4; i++) {
 		if (wide_screen) {
 		    move(y+j*2, x+i*2);
-		    addch(tile_chars[(int) shape[j][i]]);
-		    addch(tile_chars[(int) shape[j][i]]);
+		    addch(tile_chars[cast(int) shape[j][i]]);
+		    addch(tile_chars[cast(int) shape[j][i]]);
 		    move(y+j*2+1, x+i*2);
-		    addch(tile_chars[(int) shape[j][i]]);
-		    addch(tile_chars[(int) shape[j][i]]);
+		    addch(tile_chars[cast(int) shape[j][i]]);
+		    addch(tile_chars[cast(int) shape[j][i]]);
 		} else
-		    addch(tile_chars[(int) shape[j][i]]);
+		    addch(tile_chars[cast(int) shape[j][i]]);
 	    }
 	}
     }
@@ -800,7 +782,7 @@ static void draw_status(void)
 
 /* Display the special inventory and description of the current special. */
 
-static const char *descs[] = {
+static immutable string[] descs = [
     "                    ",
     "Add Line            ",
     "Clear Line          ",
@@ -811,9 +793,9 @@ static const char *descs[] = {
     "Block Gravity       ",
     "Blockquake          ",
     "Block Bomb          "
-};
+];
 
-static void draw_specials(void)
+extern(C) void draw_specials()
 {
     int x, y, i;
 
@@ -821,7 +803,7 @@ static void draw_specials(void)
 	return;
     x = own_coord[0];
     y = own_coord[1]+45;
-    mvaddstr(y, x, descs[specials[0]+1]);
+    mvaddstr(y, x, descs[specials[0]+1].ptr);
     move(y+1, x+10);
     i = 0;
     while (i < special_capacity && specials[i] >= 0 && x < attdef_coord[0]-1) {
@@ -841,52 +823,51 @@ static void draw_specials(void)
 
 /* Display an attack/defense message. */
 
-static const char *msgs[][2] = {
-    { "cs1", "1 Line Added to All" },
-    { "cs2", "2 Lines Added to All" },
-    { "cs4", "4 Lines Added to All" },
-    { "a",   "Add Line" },
-    { "c",   "Clear Line" },
-    { "n",   "Nuke Field" },
-    { "r",   "Clear Random Blocks" },
-    { "s",   "Switch Fields" },
-    { "b",   "Clear Special Blocks" },
-    { "g",   "Block Gravity" },
-    { "q",   "Blockquake" },
-    { "o",   "Block Bomb" },
-    { NULL }
-};
+static immutable string[2][12] msgs = [
+    [ "cs1", "1 Line Added to All" ],
+    [ "cs2", "2 Lines Added to All" ],
+    [ "cs4", "4 Lines Added to All" ],
+    [ "a",   "Add Line" ],
+    [ "c",   "Clear Line" ],
+    [ "n",   "Nuke Field" ],
+    [ "r",   "Clear Random Blocks" ],
+    [ "s",   "Switch Fields" ],
+    [ "b",   "Clear Special Blocks" ],
+    [ "g",   "Block Gravity" ],
+    [ "q",   "Blockquake" ],
+    [ "o",   "Block Bomb" ]
+];
 
-static void draw_attdef(const char *type, int from, int to)
+extern(C) void draw_attdef(const char *type, int from, int to)
 {
     int i, width;
-    char buf[512];
+    char[512] buf;
 
     width = other_coord[4][0] - attdef_coord[0] - 1;
     for (i = 0; msgs[i][0]; i++) {
-	if (strcmp(type, msgs[i][0]) == 0)
+	if (strcmp(type, msgs[i][0].ptr) == 0)
 	    break;
     }
     if (!msgs[i][0])
 	return;
-    strcpy(buf, msgs[i][1]);
+    strcpy(buf.ptr, msgs[i][1].ptr);
     if (to != 0)
-	sprintf(buf+strlen(buf), " on %s", players[to-1]);
+	sprintf(buf.ptr+strlen(buf.ptr), " on %s", players[to-1]);
     if (from == 0)
-	sprintf(buf+strlen(buf), " by Server");
+	sprintf(buf.ptr+strlen(buf.ptr), " by Server");
     else
-	sprintf(buf+strlen(buf), " by %s", players[from-1]);
-    draw_text(BUFFER_ATTDEF, buf);
+	sprintf(buf.ptr+strlen(buf.ptr), " by %s", players[from-1]);
+    draw_text(BUFFER_ATTDEF, buf.ptr);
 }
 
 /*************************************************************************/
 
 /* Display the in-game text window. */
 
-static void draw_gmsg_input(const char *s, int pos)
+extern(C) void draw_gmsg_input(char *s, int pos)
 {
     static int start = 0;	/* Start of displayed part of input line */
-    static const char *last_s;
+    static char *last_s;
     static int last_pos;
 
     if (s)
@@ -906,16 +887,16 @@ static void draw_gmsg_input(const char *s, int pos)
 	gmsg_inputwin =
 		subwin(stdscr, gmsg_inputheight, scrwidth, gmsg_inputpos, 0);
 	werase(gmsg_inputwin);
-	leaveok(gmsg_inputwin, FALSE);
-	leaveok(stdscr, FALSE);
-	mvwaddstr(gmsg_inputwin, 1, 0, "Text>");
+	leaveok(gmsg_inputwin, 0);
+	leaveok(stdscr, 0);
+	mvwaddstr(gmsg_inputwin, 1, 0, "Text>".ptr);
     }
 
     if (strlen(s) < scrwidth-7) {
 	start = 0;
 	mvwaddstr(gmsg_inputwin, 1, 6, s);
-	wmove(gmsg_inputwin, 1, 6+strlen(s));
-	move(gmsg_inputpos+1, 6+strlen(s));
+	wmove(gmsg_inputwin, 1, cast(int)(6+strlen(s)));
+	move(gmsg_inputpos+1, cast(int)(6+strlen(s)));
 	wclrtoeol(gmsg_inputwin);
 	wmove(gmsg_inputwin, 1, 6+pos);
 	move(gmsg_inputpos+1, 6+pos);
@@ -927,7 +908,7 @@ static void draw_gmsg_input(const char *s, int pos)
 	} else if (pos > start + scrwidth-15) {
 	    start = pos - (scrwidth-15);
 	    if (start > strlen(s) - (scrwidth-7))
-		start = strlen(s) - (scrwidth-7);
+		start = cast(int)(strlen(s) - (scrwidth-7));
 	}
 	mvwaddnstr(gmsg_inputwin, 1, 6, s+start, scrwidth-6);
 	wmove(gmsg_inputwin, 1, 6 + (pos-start));
@@ -940,12 +921,12 @@ static void draw_gmsg_input(const char *s, int pos)
 
 /* Clear the in-game text window. */
 
-static void clear_gmsg_input(void)
+extern(C) void clear_gmsg_input()
 {
     if (gmsg_inputwin) {
 	delwin(gmsg_inputwin);
-	gmsg_inputwin = NULL;
-	leaveok(stdscr, TRUE);
+	gmsg_inputwin = null;
+	leaveok(stdscr, 1);
 	touchline(stdscr, gmsg_inputpos, gmsg_inputheight);
 	setup_fields();
 	screen_refresh();
@@ -956,7 +937,7 @@ static void clear_gmsg_input(void)
 /*************************** Partyline display ***************************/
 /*************************************************************************/
 
-static void setup_partyline(void)
+extern(C) void setup_partyline()
 {
     close_textwin(&gmsgbuf);
     close_textwin(&attdefbuf);
@@ -972,25 +953,25 @@ static void setup_partyline(void)
     move(scrheight-4, 0);
     hline(MY_HLINE, scrwidth);
     move(scrheight-3, 0);
-    addstr("> ");
+    addstr("> ".ptr);
 
     move(scrheight-2, 0);
     hline(MY_HLINE2, scrwidth);
     attrset(MY_BOLD);
     move(scrheight-1, 0);
-    addstr("F1=Show Fields  F2=Partyline  F3=Winlist");
+    addstr("F1=Show Fields  F2=Partyline  F3=Winlist".ptr);
     move(scrheight-1, scrwidth-8);
-    addstr("F10=Quit");
+    addstr("F10=Quit".ptr);
     attrset(A_NORMAL);
 
     move(scrheight-3, 2);
-    leaveok(stdscr, FALSE);
+    leaveok(stdscr, 0);
     screen_refresh();
 }
 
 /*************************************************************************/
 
-static void draw_partyline_input(const char *s, int pos)
+extern(C) void draw_partyline_input(const char *s, int pos)
 {
     static int start = 0;	/* Start of displayed part of input line */
 
@@ -998,7 +979,7 @@ static void draw_partyline_input(const char *s, int pos)
     if (strlen(s) < scrwidth-3) {
 	start = 0;
 	mvaddstr(scrheight-3, 2, s);
-	move(scrheight-3, 2+strlen(s));
+	move(scrheight-3, cast(int)(2+strlen(s)));
 	clrtoeol();
 	move(scrheight-3, 2+pos);
     } else {
@@ -1009,7 +990,7 @@ static void draw_partyline_input(const char *s, int pos)
 	} else if (pos > start + scrwidth-11) {
 	    start = pos - (scrwidth-11);
 	    if (start > strlen(s) - (scrwidth-3))
-		start = strlen(s) - (scrwidth-3);
+		start = cast(int)(strlen(s) - (scrwidth-3));
 	}
 	mvaddnstr(scrheight-3, 2, s+start, scrwidth-2);
 	move(scrheight-3, 2 + (pos-start));
@@ -1021,45 +1002,45 @@ static void draw_partyline_input(const char *s, int pos)
 /**************************** Winlist display ****************************/
 /*************************************************************************/
 
-static void setup_winlist(void)
+extern(C) void setup_winlist()
 {
     int i, x;
-    char buf[32];
+    char[32] buf;
 
-    leaveok(stdscr, TRUE);
+    leaveok(stdscr, 1);
     close_textwin(&plinebuf);
     clear();
     attrset(getcolor(COLOR_WHITE,COLOR_BLACK));
 
-    for (i = 0; i < MAXWINLIST && *winlist[i].name; i++) {
-	x = scrwidth/2 - strlen(winlist[i].name);
+    for (i = 0; i < MAXWINLIST && winlist[i].name.ptr; i++) {
+	x = cast(int)(scrwidth/2 - strlen(winlist[i].name.ptr));
 	if (x < 0)
 	    x = 0;
 	if (winlist[i].team) {
 	    if (x < 4)
 		x = 4;
-	    mvaddstr(i*2, x-4, "<T>");
+	    mvaddstr(i*2, x-4, "<T>".ptr);
 	}
-	mvaddstr(i*2, x, winlist[i].name);
-	snprintf(buf, sizeof(buf), "%4d", winlist[i].points);
+	mvaddstr(i*2, x, winlist[i].name.ptr);
+	snprintf(buf.ptr, buf.sizeof, "%4d", winlist[i].points);
 	if (winlist[i].games) {
 	    int avg100 = winlist[i].points*100 / winlist[i].games;
-	    snprintf(buf+strlen(buf), sizeof(buf)-strlen(buf),
+	    snprintf(buf.ptr+strlen(buf.ptr), buf.sizeof-strlen(buf.ptr),
 			"   %d.%02d",avg100/100, avg100%100);
 	}
-	x += strlen(winlist[i].name) + 2;
-	if (x > scrwidth - strlen(buf))
-	    x = scrwidth - strlen(buf);
-	mvaddstr(i*2, x, buf);
+	x += strlen(winlist[i].name.ptr) + 2;
+	if (x > scrwidth - strlen(buf.ptr))
+	    x = cast(int)(scrwidth - strlen(buf.ptr));
+	mvaddstr(i*2, x, buf.ptr);
     }
 
     move(scrheight-2, 0);
     hline(MY_HLINE2, scrwidth);
     attrset(MY_BOLD);
     move(scrheight-1, 0);
-    addstr("F1=Show Fields  F2=Partyline  F3=Winlist");
+    addstr("F1=Show Fields  F2=Partyline  F3=Winlist".ptr);
     move(scrheight-1, scrwidth-8);
-    addstr("F10=Quit");
+    addstr("F10=Quit".ptr);
     attrset(A_NORMAL);
 
     screen_refresh();
@@ -1069,30 +1050,31 @@ static void setup_winlist(void)
 /************************** Interface declaration ************************/
 /*************************************************************************/
 
-Interface tty_interface = {
+extern(C) __gshared Interface_ xwin_interface = Interface_(
 
-    wait_for_input,
+    &wait_for_input,
 
-    screen_setup,
-    screen_refresh,
-    screen_redraw,
+    &screen_setup,
+    &screen_refresh,
+    &screen_redraw,
 
-    draw_text,
-    clear_text,
+    &draw_text,
+    &clear_text,
 
-    setup_fields,
-    draw_own_field,
-    draw_other_field,
-    draw_status,
-    draw_specials,
-    draw_attdef,
-    draw_gmsg_input,
-    clear_gmsg_input,
+    &setup_fields,
+    &draw_own_field,
+    &draw_other_field,
+    &draw_status,
+    &draw_specials,
+    &draw_attdef,
+    &draw_gmsg_input,
+    &clear_gmsg_input,
 
-    setup_partyline,
-    draw_partyline_input,
+    &setup_partyline,
+    &draw_partyline_input,
 
-    setup_winlist
-};
+    &setup_winlist
+);
 
 /*************************************************************************/
+

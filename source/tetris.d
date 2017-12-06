@@ -1,49 +1,52 @@
-/* Tetrinet for Linux, by Andrew Church <achurch@achurch.org>
- * This program is public domain.
- *
- * Tetris core.
- */
+module dtetrinet.tetris;
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/time.h>
-#include "tetrinet.h"
-#include "tetris.h"
-#include "io.h"
-#include "sockets.h"
+import dtetrinet.tetrinet;
+import dtetrinet.sockets;
 
-/*************************************************************************/
+import core.stdc.string;
+import core.stdc.stdio;
+import core.sys.posix.sys.time;
+import core.sys.posix.stdlib;
 
-int piecefreq[7];	/* Frequency (percentage) for each block type */
-int specialfreq[9];	/* Frequency for each special type */
-int old_mode;		/* Old mode? (i.e. Gameboy-style) */
-int initial_level;	/* Initial level */
-int lines_per_level;	/* Number of lines per level-up */
-int level_inc;		/* Levels to increase at each level-up */
-int level_average;	/* Average all players' levels */
-int special_lines;	/* Number of lines needed for a special block */
-int special_count;	/* Number of special blocks added each time */
-int special_capacity;	/* Capacity of special block inventory */
+extern(C) int strncasecmp(const char *s1, const char *s2, size_t n);
 
-Field fields[6];	/* Current field states */
-int levels[6];		/* Current levels */
-int lines;		/* Lines completed (by us) */
-char specials[MAX_SPECIALS] = {-1}; /* Special block inventory */
-int next_piece;		/* Next piece to fall */
+enum SPECIAL_A =	0;
+enum SPECIAL_C =	1;
+enum SPECIAL_N =	2;
+enum SPECIAL_R =	3;
+enum SPECIAL_S =	4;
+enum SPECIAL_B =	5;
+enum SPECIAL_G =	6;
+enum SPECIAL_Q =	7;
+enum SPECIAL_O =	8;
 
-static struct timeval timeout;	/* Time of next action */
-int current_piece;	/* Current piece number */
-int current_rotation;	/* Current rotation value */
-int current_x;		/* Current X position */
-int current_y;		/* Current Y position */
-static int piece_waiting;	/* Are we waiting for a new piece to start? */
+struct PieceData {
+    int hot_x, hot_y;	/* Hotspot coordinates */
+    int top, left;	/* Top-left coordinates relative to hotspot */
+    int bottom, right;	/* Bottom-right coordinates relative to hotspot */
+    char[4][4] shape;	/* Shape data for the piece */
+}
 
-static int last_special;	/* Last line for which we added a special */
+enum MAX_SPECIALS = 64;
 
-/*************************************************************************/
-
-#ifndef SERVER_ONLY
+extern(C) __gshared {
+	int current_piece, current_rotation;
+	int piece_waiting;
+	PieceData[4][7] piecedata;
+	timeval timeout;
+	int last_special;
+	int[7] piecefreq;
+	int[9] specialfreq;
+	int old_mode;
+	int initial_level, lines_per_level, level_inc, level_average;
+	int special_lines, special_count, special_capacity;
+	Field[6] fields;
+	int[6] levels;
+	int lines;
+	byte[MAX_SPECIALS] specials;
+	int next_piece;
+	int current_x, current_y;
+}
 
 /*************************************************************************/
 
@@ -60,51 +63,49 @@ static int last_special;	/* Last line for which we added a special */
  * This is all parsed by init_shapes, which should be called at startup.
  */
 
-static const char shapes[7][4][4][4] = {
-    { { "##X#", "..X.", "##X#", "..X." },
-      { "....", "..#.", "....", "..#." },
-      { "....", "..#.", "....", "..#." },
-      { "....", "..#.", "....", "..#." } },
+static immutable char[4][4][4][7] shapes = [
+    [ [ "##X#", "..X.", "##X#", "..X." ],
+      [ "....", "..#.", "....", "..#." ],
+      [ "....", "..#.", "....", "..#." ],
+      [ "....", "..#.", "....", "..#." ] ],
 
-    { { "....", "....", "....", "...." },
-      { ".X#.", ".X#.", ".X#.", ".X#." },
-      { ".##.", ".##.", ".##.", ".##." },
-      { "....", "....", "....", "...." } },
+    [ [ "....", "....", "....", "...." ],
+      [ ".X#.", ".X#.", ".X#.", ".X#." ],
+      [ ".##.", ".##.", ".##.", ".##." ],
+      [ "....", "....", "....", "...." ] ],
 
-    { { "....", ".#..", "#...", ".##." },
-      { "#X#.", ".X..", "#X#.", ".X.." },
-      { "..#.", "##..", "....", ".#.." },
-      { "....", "....", "....", "...." } },
+    [ [ "....", ".#..", "#...", ".##." ],
+      [ "#X#.", ".X..", "#X#.", ".X.." ],
+      [ "..#.", "##..", "....", ".#.." ],
+      [ "....", "....", "....", "...." ] ],
 
-    { { "....", "##..", "..#.", ".#.." },
-      { "#X#.", ".X..", "#X#.", ".X.." },
-      { "#...", ".#..", "....", ".##." },
-      { "....", "....", "....", "...." } },
+    [ [ "....", "##..", "..#.", ".#.." ],
+      [ "#X#.", ".X..", "#X#.", ".X.." ],
+      [ "#...", ".#..", "....", ".##." ],
+      [ "....", "....", "....", "...." ] ],
 
-    { { "....", ".#..", "....", ".#.." },
-      { "#X..", "#X..", "#X..", "#X.." },
-      { ".##.", "#...", ".##.", "#..." },
-      { "....", "....", "....", "...." } },
+    [ [ "....", ".#..", "....", ".#.." ],
+      [ "#X..", "#X..", "#X..", "#X.." ],
+      [ ".##.", "#...", ".##.", "#..." ],
+      [ "....", "....", "....", "...." ] ],
 
-    { { "....", "#...", "....", "#..." },
-      { ".X#.", "#X..", ".X#.", "#X.." },
-      { "##..", ".#..", "##..", ".#.." },
-      { "....", "....", "....", "...." } },
+    [ [ "....", "#...", "....", "#..." ],
+      [ ".X#.", "#X..", ".X#.", "#X.." ],
+      [ "##..", ".#..", "##..", ".#.." ],
+      [ "....", "....", "....", "...." ] ],
 
-    { { "....", ".#..", ".#..", ".#.." },
-      { "#X#.", "#X..", "#X#.", ".X#." },
-      { ".#..", ".#..", "....", ".#.." },
-      { "....", "....", "....", "...." } }
-};
+    [ [ "....", ".#..", ".#..", ".#.." ],
+      [ "#X#.", "#X..", "#X#.", ".X#." ],
+      [ ".#..", ".#..", "....", ".#.." ],
+      [ "....", "....", "....", "...." ] ]
+];
 
-/* piecedata[piece][rot]; filled in by init_shapes() */
-PieceData piecedata[7][4];
 
 /*************************************************************************/
 
 /* Parse the shapes array and fill in the piece data. */
 
-void init_shapes(void)
+extern(C) void init_shapes()
 {
     int i, x, y, r;
 
@@ -152,7 +153,7 @@ void init_shapes(void)
 			piecedata[i][r].hot_y       = y;
 			break;
 		      default :
-			fprintf(stderr, "Piece %d rotation %d: "
+			fprintf(stderr, "Piece %d rotation %d: "~
 					"weird character `%c' at (%d,%d)\n",
 				i, r, shapes[i][y][r][x], x, y);
 			exit(1);
@@ -174,17 +175,17 @@ void init_shapes(void)
  * or rotation is invalid, else 0.
  */
 
-int get_shape(int piece, int rotation, char buf[4][4])
+extern(C) int get_shape(int piece, int rotation, char[4][4] buf)
 {
     int x, y;
     char *shape;
 
     if (piece < 0 || piece > 6 || rotation < 0 || rotation > 3)
 	return -1;
-    shape = (char *) piecedata[piece][rotation].shape;
+    shape = cast(char*) piecedata[piece][rotation].shape;
     for (y = 0; y < 4; y++) {
 	for (x = 0; x < 4; x++) {
-	    buf[y][x] = *shape++ ? piece%5 + 1 : 0;
+	    buf[y][x] = *shape++ ? cast(char)(piece%5 + 1) : 0;
 	}
     }
     return 0;
@@ -197,7 +198,7 @@ int get_shape(int piece, int rotation, char buf[4][4])
  * current level.
  */
 
-static int level_delay()
+extern(C) int level_delay()
 {
     int level = levels[my_playernum-1];
     int delay = 1000;
@@ -214,7 +215,7 @@ static int level_delay()
  * other blocks in the field.  A value of -1 means use the current_* value.
  */
 
-static int piece_overlaps(int x, int y, int rot)
+extern(C) int piece_overlaps(int x, int y, int rot)
 {
     Field *f = &fields[my_playernum-1];
     PieceData *pd;
@@ -227,14 +228,14 @@ static int piece_overlaps(int x, int y, int rot)
     if (rot < 0)
 	rot = current_rotation;
     pd = &piecedata[current_piece][rot];
-    x -= pd->hot_x;
-    y -= pd->hot_y;
+    x -= pd.hot_x;
+    y -= pd.hot_y;
     ok = 1;
     for (j = 0; ok && j < 4; j++) {
 	if (y+j < 0)
 	    continue;
 	for (i = 0; ok && i < 4; i++) {
-	    if (pd->shape[j][i] && (y+j >= FIELD_HEIGHT || x+i < 0
+	    if (pd.shape[j][i] && (y+j >= FIELD_HEIGHT || x+i < 0
 				 || x+i >= FIELD_WIDTH || (*f)[y+j][x+i]))
 		ok = 0;
 	}
@@ -248,13 +249,13 @@ static int piece_overlaps(int x, int y, int rot)
  * erase the piece rather than drawing it.
  */
 
-static void draw_piece(int draw)
+extern(C) void draw_piece(int draw)
 {
     Field *f = &fields[my_playernum-1];
-    char c = draw ? current_piece % 5 + 1 : 0;
+    char c = draw ? cast(char)(current_piece % 5 + 1) : 0;
     int x = current_x - piecedata[current_piece][current_rotation].hot_x;
     int y = current_y - piecedata[current_piece][current_rotation].hot_y;
-    char *shape = (char *) piecedata[current_piece][current_rotation].shape;
+    char *shape = cast(char*) piecedata[current_piece][current_rotation].shape;
     int i, j;
 
     for (j = 0; j < 4; j++) {
@@ -273,11 +274,11 @@ static void draw_piece(int draw)
 
 /* Clear any full lines on the field; return the number of lines cleared. */
 
-static int clear_lines(int add_specials)
+extern(C) int clear_lines(int add_specials)
 {
     Field *f = &fields[my_playernum-1];
     int x, y, count = 0, i, j, k;
-    int new_specials[9];
+    int[9] new_specials;
 
     for (y = 0; y < FIELD_HEIGHT; y++) {
 	int full = 1;
@@ -291,7 +292,7 @@ static int clear_lines(int add_specials)
 	    count++;
     }
 
-    memset(new_specials, 0, sizeof(new_specials));
+    memset(new_specials.ptr, 0, new_specials.sizeof);
     for (y = 0; y < FIELD_HEIGHT; y++) {
 	int full = 1;
 	for (x = 0; x < FIELD_WIDTH; x++) {
@@ -306,8 +307,8 @@ static int clear_lines(int add_specials)
 		    new_specials[(*f)[y][x]-6]++;
 	    }
 	    if (y > 0)
-		memmove((*f)[1], (*f)[0], FIELD_WIDTH*y);
-	    memset((*f)[0], 0, FIELD_WIDTH);
+		memmove((*f)[1].ptr, (*f)[0].ptr, FIELD_WIDTH*y);
+	    memset((*f)[0].ptr, 0, FIELD_WIDTH);
 	}
     }
 
@@ -319,17 +320,17 @@ static int clear_lines(int add_specials)
 	    for (j = 0; j < 9 && pos < special_capacity; j++) {
 		for (k = 0; k < new_specials[j] && pos < special_capacity; k++){
 		    if (windows_mode && rand()%2) {
-			memmove(specials+1, specials, pos);
-			specials[0] = j;
+			memmove(specials.ptr+1, specials.ptr, pos);
+			specials[0] = cast(byte)j;
 			pos++;
 		    } else
-			specials[pos++] = j;
+			specials[pos++] = cast(byte)j;
 		}
 	    }
 	}
 	if (pos < special_capacity)
 	    specials[pos] = -1;
-	io->draw_specials();
+	io.draw_specials();
     }
 
     return count;
@@ -342,7 +343,7 @@ static int clear_lines(int add_specials)
  * specials.
  */
 
-static void place_specials(int num)
+extern(C) void place_specials(int num)
 {
     Field *f = &fields[my_playernum-1];
     int nblocks = 0, left;
@@ -369,7 +370,7 @@ static void place_specials(int num)
 			n -= specialfreq[which];
 			which++;
 		    }
-		    (*f)[y][x] = 6 + which;
+		    (*f)[y][x] = cast(char)(6 + which);
 		    left--;
 		}
 	    }
@@ -385,11 +386,12 @@ static void place_specials(int num)
  * send the complete field.
  */
 
-static void send_field(Field *oldfield)
+extern(C) void send_field(Field *oldfield)
 {
     Field *f = &fields[my_playernum-1];
     int i, x, y, diff = 0;
-    char buf[512], *s;
+    char[512] buf;
+	char* s;
 
     if (oldfield) {
 	for (y = 0; y < FIELD_HEIGHT; y++) {
@@ -402,18 +404,18 @@ static void send_field(Field *oldfield)
 	diff = FIELD_WIDTH * FIELD_HEIGHT;
     }
     if (diff < (FIELD_WIDTH*FIELD_HEIGHT)/2) {
-	s = buf + sprintf(buf, "f %d ", my_playernum);
+	s = buf.ptr + sprintf(buf.ptr, "f %d ", my_playernum);
 	for (i = 0; i < 15; i++) {
 	    int seen = 0;   /* Have we seen a difference of this block? */
 	    for (y = 0; y < FIELD_HEIGHT; y++) {
 		for (x = 0; x < FIELD_WIDTH; x++) {
 		    if ((*f)[y][x] == i && (*f)[y][x] != (*oldfield)[y][x]) {
 			if (!seen) {
-			    *s++ = i + '!';
+			    *s++ = cast(char)(i + '!');
 			    seen = 1;
 			}
-			*s++ = x + '3';
-			*s++ = y + '3';
+			*s++ = cast(char)(x + '3');
+			*s++ = cast(char)(y + '3');
 		    }
 		} /* for x */
 	    } /* for y */
@@ -421,20 +423,20 @@ static void send_field(Field *oldfield)
     } /* difference check */
     /* -4 below is to adjust for "f %d " */
     if (diff >= (FIELD_WIDTH*FIELD_HEIGHT)/2
-				|| strlen(buf)-4 > FIELD_WIDTH*FIELD_HEIGHT) {
-	static const char specials[] = "acnrsbgqo";
-	s = buf + sprintf(buf, "f %d ", my_playernum);
+				|| strlen(buf.ptr)-4 > FIELD_WIDTH*FIELD_HEIGHT) {
+	static immutable string specials = "acnrsbgqo";
+	s = buf.ptr + sprintf(buf.ptr, "f %d ", my_playernum);
 	for (y = 0; y < FIELD_HEIGHT; y++) {
 	    for (x = 0; x < FIELD_WIDTH; x++) {
 		if ((*f)[y][x] > 5)
 		    *s++ = specials[(*f)[y][x]-6];
 		else
-		    *s++ = (*f)[y][x] + '0';
+		    *s++ = cast(char)((*f)[y][x] + '0');
 	    }
 	}
     }
     *s = 0;
-    sputs(buf, server_sock);
+    sputs(buf.ptr, server_sock);
 }
 
 /*************************************************************************/
@@ -442,7 +444,7 @@ static void send_field(Field *oldfield)
 
 /* Generate a new piece and set up the timer. */
 
-void new_piece(void)
+extern(C) void new_piece()
 {
     int n;
     PieceData *pd;
@@ -457,7 +459,7 @@ void new_piece(void)
     current_rotation = 0;
     pd = &piecedata[current_piece][current_rotation];
     current_x = 6;
-    current_y = pd->hot_y - pd->top;
+    current_y = pd.hot_y - pd.top;
     if (piece_overlaps(-1, -1, -1)) {
 	current_x--;
 	if (piece_overlaps(-1, -1, -1)) {
@@ -467,9 +469,9 @@ void new_piece(void)
 		int x, y;
 		for (y = 0; y < FIELD_HEIGHT; y++) {
 		    for (x = 0; x < FIELD_WIDTH; x++)
-			(*f)[y][x] = rand()%5 + 1;
+			(*f)[y][x] = cast(char)(rand()%5 + 1);
 		}
-		send_field(NULL);
+		send_field(null);
 		sockprintf(server_sock, "playerlost %d", my_playernum);
 		playing_game = 0;
 		not_playing_game = 1;
@@ -477,9 +479,9 @@ void new_piece(void)
 	}
     }
     draw_piece(1);
-    io->draw_status();
-    io->draw_own_field();
-    gettimeofday(&timeout, NULL);
+    io.draw_status();
+    io.draw_own_field();
+    gettimeofday(&timeout, null);
     timeout.tv_usec += level_delay() * 1000;
     timeout.tv_sec += timeout.tv_usec / 1000000;
     timeout.tv_usec %= 1000000;
@@ -493,29 +495,29 @@ void new_piece(void)
  * and start a new piece.
  */
 
-void step_down(void)
+extern(C) void step_down()
 {
     Field *f = &fields[my_playernum-1];
     PieceData *pd = &piecedata[current_piece][current_rotation];
-    int y = current_y - pd->hot_y;
+    int y = current_y - pd.hot_y;
     int ynew;
 
     draw_piece(0);
     ynew = current_y+1;
-    if (y+1 + pd->bottom < FIELD_HEIGHT && !piece_overlaps(-1, ynew, -1)) {
+    if (y+1 + pd.bottom < FIELD_HEIGHT && !piece_overlaps(-1, ynew, -1)) {
 	current_y++;
 	draw_piece(1);
-	io->draw_own_field();
-	gettimeofday(&timeout, NULL);
+	io.draw_own_field();
+	gettimeofday(&timeout, null);
 	timeout.tv_usec += level_delay() * 1000;
 	timeout.tv_sec += timeout.tv_usec / 1000000;
 	timeout.tv_usec %= 1000000;
     } else {
 	int completed, level, nspecials;
 	Field oldfield;
-	char buf[16];
+	char[16] buf;
 
-	memcpy(&oldfield, f, sizeof(oldfield));
+	memcpy(&oldfield, f, oldfield.sizeof);
 	draw_piece(1);
 	if (last_special > lines)	/* i.e. from a previous game */
 	    last_special = 0;
@@ -525,8 +527,8 @@ void step_down(void)
 	    if (completed < 4)
 		completed--;
 	    sockprintf(server_sock, "sb 0 cs%d %d", completed, my_playernum);
-	    sprintf(buf, "cs%d", completed);
-	    io->draw_attdef(buf, my_playernum, 0);
+	    sprintf(buf.ptr, "cs%d", completed);
+	    io.draw_attdef(buf.ptr, my_playernum, 0);
 	}
 	level = initial_level + (lines / lines_per_level) * level_inc;
 	if (level > 100)
@@ -534,16 +536,16 @@ void step_down(void)
 	levels[my_playernum] = level;
 	if (completed > 0) {
 	    sockprintf(server_sock, "lvl %d %d", my_playernum, level);
-	    io->draw_status();
+	    io.draw_status();
 	}
 	nspecials = (lines - last_special) / special_lines;
 	last_special += nspecials * special_lines;
 	nspecials *= special_count;
 	place_specials(nspecials);
-	io->draw_own_field();
+	io.draw_own_field();
 	send_field(&oldfield);
 	piece_waiting = 1;
-	gettimeofday(&timeout, NULL);
+	gettimeofday(&timeout, null);
 	timeout.tv_usec += tetrifast ? 0 : 600000;
 	timeout.tv_sec += timeout.tv_usec / 1000000;
 	timeout.tv_usec %= 1000000;
@@ -554,13 +556,13 @@ void step_down(void)
 
 /* Do something for a special block. */
 
-void do_special(const char *type, int from, int to)
+extern(C) void do_special(const char *type, int from, int to)
 {
     Field *f = &fields[my_playernum-1];
     Field oldfield;
     int x, y;
 
-    io->draw_attdef(type, from, to);
+    io.draw_attdef(type, from, to);
 
     if (!playing_game)
 	return;
@@ -570,7 +572,7 @@ void do_special(const char *type, int from, int to)
     if (!piece_waiting)
 	draw_piece(0);
 
-    memcpy(&oldfield, f, sizeof(Field));
+    memcpy(&oldfield, f, Field.sizeof);
 
     if (strncmp(type, "cs", 2) == 0) {
 	int nlines = atoi(type+2);
@@ -581,32 +583,32 @@ void do_special(const char *type, int from, int to)
 	 || strcmp(teams[my_playernum-1],teams[from-1]) != 0
 	) {
 	    while (nlines--) {
-		memmove((*f)[0], (*f)[1], FIELD_WIDTH*(FIELD_HEIGHT-1));
+		memmove((*f)[0].ptr, (*f)[1].ptr, FIELD_WIDTH*(FIELD_HEIGHT-1));
 		for (x = 0; x < FIELD_WIDTH; x++)
-		    (*f)[21][x] = 1 + rand()%5;
-		(*f)[FIELD_HEIGHT-1][rand()%FIELD_WIDTH] = 0;
+		    f[21][x] = cast(char)(1 + rand()%5);
+		f[FIELD_HEIGHT-1][rand()%FIELD_WIDTH] = 0;
 	    }
 	}
 
     } else if (*type == 'a') {
-	memmove((*f)[0], (*f)[1], FIELD_WIDTH*(FIELD_HEIGHT-1));
+	memmove((*f)[0].ptr, f[1].ptr, FIELD_WIDTH*(FIELD_HEIGHT-1));
 	for (x = 0; x < FIELD_WIDTH; x++)
-	    (*f)[21][x] = 1 + rand()%5;
-	(*f)[FIELD_HEIGHT-1][rand()%FIELD_WIDTH] = 0;
-	(*f)[FIELD_HEIGHT-1][rand()%FIELD_WIDTH] = 0;
-	(*f)[FIELD_HEIGHT-1][rand()%FIELD_WIDTH] = 0;
+	    f[21][x] = cast(char)(1 + rand()%5);
+	f[FIELD_HEIGHT-1][rand()%FIELD_WIDTH] = 0;
+	f[FIELD_HEIGHT-1][rand()%FIELD_WIDTH] = 0;
+	f[FIELD_HEIGHT-1][rand()%FIELD_WIDTH] = 0;
 
     } else if (*type == 'b') {
 	for (y = 0; y < FIELD_HEIGHT; y++) {
 	    for (x = 0; x < FIELD_WIDTH; x++) {
 		if ((*f)[y][x] > 5)
-		    (*f)[y][x] = rand()%5 + 1;
+		    (*f)[y][x] = cast(char)(rand()%5 + 1);
 	    }
 	}
 
     } else if (*type == 'c') {
-	memmove((*f)[1], (*f)[0], FIELD_WIDTH*(FIELD_HEIGHT-1));
-	memset((*f)[0], 0, FIELD_WIDTH);
+	memmove((*f)[1].ptr, (*f)[0].ptr, FIELD_WIDTH*(FIELD_HEIGHT-1));
+	memset((*f)[0].ptr, 0, FIELD_WIDTH);
 
     } else if (*type == 'g') {
 	for (x = 0; x < FIELD_WIDTH; x++) {
@@ -630,7 +632,7 @@ void do_special(const char *type, int from, int to)
 	clear_lines(0);
 
     } else if (*type == 'n') {
-	memset(*f, 0, FIELD_WIDTH*FIELD_HEIGHT);
+	memset(f.ptr, 0, FIELD_WIDTH*FIELD_HEIGHT);
 
     } else if (*type == 'o') {
 	int tries, x2, y2, xnew, ynew;
@@ -669,18 +671,18 @@ void do_special(const char *type, int from, int to)
 	    int r = rand()%3 - 1;
 	    if (r < 0) {
 		int save = (*f)[y][0];
-		memmove((*f)[y], (*f)[y]+1, FIELD_WIDTH-1);
+		memmove((*f)[y].ptr, (*f)[y].ptr+1, FIELD_WIDTH-1);
 		if (windows_mode)
 		    (*f)[y][FIELD_WIDTH-1] = 0;
 		else
-		    (*f)[y][FIELD_WIDTH-1] = save;
+		    (*f)[y][FIELD_WIDTH-1] = cast(char)save;
 	    } else if (r > 0) {
 		int save = (*f)[y][FIELD_WIDTH-1];
-		memmove((*f)[y]+1, (*f)[y], FIELD_WIDTH-1);
+		memmove((*f)[y].ptr+1, (*f)[y].ptr, FIELD_WIDTH-1);
 		if (windows_mode)
 		    (*f)[y][0] = 0;
 		else
-		    (*f)[y][0] = save;
+		    (*f)[y][0] = cast(char)save;
 	    }
 	}
 
@@ -699,15 +701,15 @@ void do_special(const char *type, int from, int to)
     } else if (*type == 's') {
 	Field temp;
 
-	memcpy(temp, fields[from-1], sizeof(Field));
-	memcpy(fields[from-1], fields[to-1], sizeof(Field));
-	memcpy(fields[to-1], temp, sizeof(Field));
+	memcpy(temp.ptr, fields[from-1].ptr, Field.sizeof);
+	memcpy(fields[from-1].ptr, fields[to-1].ptr, Field.sizeof);
+	memcpy(fields[to-1].ptr, temp.ptr, Field.sizeof);
 	if (from == my_playernum || to == my_playernum)
-	    memset(fields[my_playernum-1], 0, 6*FIELD_WIDTH);
+	    memset(fields[my_playernum-1].ptr, 0, 6*FIELD_WIDTH);
 	if (from != my_playernum)
-	    io->draw_other_field(from);
+	    io.draw_other_field(from);
 	if (to != my_playernum)
-	    io->draw_other_field(to);
+	    io.draw_other_field(to);
 
     }
 
@@ -718,7 +720,7 @@ void do_special(const char *type, int from, int to)
 	    current_y--;
 	draw_piece(1);
     }
-    io->draw_own_field();
+    io.draw_own_field();
 }
 
 /*************************************************************************/
@@ -726,35 +728,33 @@ void do_special(const char *type, int from, int to)
 
 /* Deal with the in-game message input buffer. */
 
-static char gmsg_buffer[512];
-static int gmsg_pos;
-
-#define curpos	(gmsg_buffer+gmsg_pos)
+extern(C) __gshared char[512] gmsg_buffer;
+extern(C) __gshared int gmsg_pos;
 
 /*************************************************************************/
 
-static void gmsg_input(int c)
+extern(C) void gmsg_input(int c)
 {
-    if (gmsg_pos < sizeof(gmsg_buffer) - 1) {
-	memmove(curpos+1, curpos, strlen(curpos)+1);
-	gmsg_buffer[gmsg_pos++] = c;
-	io->draw_gmsg_input(gmsg_buffer, gmsg_pos);
+    if (gmsg_pos < gmsg_buffer.sizeof - 1) {
+	memmove(gmsg_buffer.ptr+gmsg_pos+1, gmsg_buffer.ptr+gmsg_pos, strlen(gmsg_buffer.ptr+gmsg_pos)+1);
+	gmsg_buffer[gmsg_pos++] = cast(char)c;
+	io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
     }
 }
 
 /*************************************************************************/
 
-static void gmsg_delete(void)
+extern(C) void gmsg_delete()
 {
     if (gmsg_buffer[gmsg_pos]) {
-	memmove(curpos, curpos+1, strlen(curpos)-1+1);
-	io->draw_gmsg_input(gmsg_buffer, gmsg_pos);
+	memmove(gmsg_buffer.ptr+gmsg_pos, gmsg_buffer.ptr+gmsg_pos+1, strlen(gmsg_buffer.ptr+gmsg_pos)-1+1);
+	io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
     }
 }
 
 /*************************************************************************/
 
-static void gmsg_backspace(void)
+extern(C) void gmsg_backspace()
 {
     if (gmsg_pos > 0) {
 	gmsg_pos--;
@@ -764,59 +764,57 @@ static void gmsg_backspace(void)
 
 /*************************************************************************/
 
-static void gmsg_kill(void)
+extern(C) void gmsg_kill()
 {
     gmsg_pos = 0;
-    *gmsg_buffer = 0;
-    io->draw_gmsg_input(gmsg_buffer, gmsg_pos);
+    gmsg_buffer = null;
+    io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
 }
 
 /*************************************************************************/
 
-static void gmsg_move(int how)
+extern(C) void gmsg_move(int how)
 {
     if (how == -2) {
 	gmsg_pos = 0;
-	io->draw_gmsg_input(gmsg_buffer, gmsg_pos);
+	io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
     } else if (how == -1 && gmsg_pos > 0) {
 	gmsg_pos--;
-	io->draw_gmsg_input(gmsg_buffer, gmsg_pos);
+	io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
     } else if (how == 1 && gmsg_buffer[gmsg_pos]) {
 	gmsg_pos++;
-	io->draw_gmsg_input(gmsg_buffer, gmsg_pos);
+	io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
     } else if (how == 2) {
-	gmsg_pos = strlen(gmsg_buffer);
-	io->draw_gmsg_input(gmsg_buffer, gmsg_pos);
+	gmsg_pos = cast(int)strlen(gmsg_buffer.ptr);
+	io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
     }
 }
 
 /*************************************************************************/
 
-static void gmsg_enter(void)
+extern(C) void gmsg_enter()
 {
-    if (*gmsg_buffer) {
-	if (strncasecmp(gmsg_buffer, "/me ", 4) == 0)
-	    sockprintf(server_sock, "gmsg * %s %s", players[my_playernum-1], gmsg_buffer+4);
+    if (gmsg_buffer.ptr) {
+	if (strncasecmp(gmsg_buffer.ptr, "/me ", 4) == 0)
+	    sockprintf(server_sock, "gmsg * %s %s", players[my_playernum-1], gmsg_buffer.ptr+4);
 	else
-	    sockprintf(server_sock, "gmsg <%s> %s", players[my_playernum-1], gmsg_buffer);
+	    sockprintf(server_sock, "gmsg <%s> %s", players[my_playernum-1], gmsg_buffer.ptr);
 	gmsg_pos = 0;
-	*gmsg_buffer = 0;
-	io->clear_gmsg_input();
+	gmsg_buffer = null;
+	io.clear_gmsg_input();
     }
 }
-
-#undef curpos
 
 /*************************************************************************/
 /*************************************************************************/
 
 /* Set up for a new game. */
 
-void new_game(void)
+extern(C) void new_game()
 {
     int n;
 
-    gettimeofday(&timeout, NULL);
+    gettimeofday(&timeout, null);
     timeout.tv_usec += 1200000;
     timeout.tv_sec += timeout.tv_usec / 1000000;
     timeout.tv_usec %= 1000000;
@@ -833,14 +831,14 @@ void new_game(void)
 
 /* Return the number of milliseconds until we want to do something. */
 
-int tetris_timeout(void)
+int tetris_timeout()
 {
-    struct timeval tv;
+    timeval tv;
     int t;
 
-    gettimeofday(&tv, NULL);
-    t = (timeout.tv_sec - tv.tv_sec) * 1000
-      + (timeout.tv_usec-tv.tv_usec) / 1000;
+    gettimeofday(&tv, null);
+    t = cast(int)((timeout.tv_sec - tv.tv_sec) * 1000
+      + (timeout.tv_usec-tv.tv_usec) / 1000);
     return t<0 ? 0 : t;
 }
 
@@ -848,7 +846,7 @@ int tetris_timeout(void)
 
 /* Do something when we hit a timeout. */
 
-void tetris_timeout_action(void)
+extern(C) void tetris_timeout_action()
 {
     if (piece_waiting)
 	new_piece();
@@ -860,13 +858,13 @@ void tetris_timeout_action(void)
 
 /* Do something with a character of input. */
 
-static const char special_chars[] = "acnrsbgqo";
+static immutable string special_chars = "acnrsbgqo";
 
-void tetris_input(int c)
+extern(C) void tetris_input(int c)
 {
     PieceData *pd = &piecedata[current_piece][current_rotation];
-    int x = current_x - pd->hot_x;
-    int y = current_y - pd->hot_y;
+    int x = current_x - pd.hot_x;
+    int y = current_y - pd.hot_y;
     int rnew, ynew;
     static int gmsg_active = 0;
 
@@ -889,7 +887,7 @@ void tetris_input(int c)
 	    gmsg_enter();
 	    gmsg_active = 0;
 	} else if (c == 27) {  /* Escape */
-	    io->clear_gmsg_input();
+	    io.clear_gmsg_input();
 	    gmsg_active = 0;
 	} else if (c >= 1 && c <= 0xFF)
 	    gmsg_input(c);
@@ -906,16 +904,16 @@ void tetris_input(int c)
 	    break;
 	rnew = (current_rotation+1) % 4;
 	pd = &piecedata[current_piece][current_rotation];
-	x = current_x - pd->hot_x;
-	y = current_y - pd->hot_y;
-	if (x + pd->left < 0 || x + pd->right >= FIELD_WIDTH
-	 || y + pd->bottom >= FIELD_HEIGHT)
+	x = current_x - pd.hot_x;
+	y = current_y - pd.hot_y;
+	if (x + pd.left < 0 || x + pd.right >= FIELD_WIDTH
+	 || y + pd.bottom >= FIELD_HEIGHT)
 	    break;
 	draw_piece(0);
 	if (!piece_overlaps(-1, -1, rnew)) {
 	    current_rotation = rnew;
 	    draw_piece(1);
-	    io->draw_own_field();
+	    io.draw_own_field();
 	} else {
 	    draw_piece(1);
 	}
@@ -926,16 +924,16 @@ void tetris_input(int c)
 	    break;
 	rnew = (current_rotation+3) % 4;
 	pd = &piecedata[current_piece][current_rotation];
-	x = current_x - pd->hot_x;
-	y = current_y - pd->hot_y;
-	if (x + pd->left < 0 || x + pd->right >= FIELD_WIDTH
-	 || y + pd->bottom >= FIELD_HEIGHT)
+	x = current_x - pd.hot_x;
+	y = current_y - pd.hot_y;
+	if (x + pd.left < 0 || x + pd.right >= FIELD_WIDTH
+	 || y + pd.bottom >= FIELD_HEIGHT)
 	    break;
 	draw_piece(0);
 	if (!piece_overlaps(-1, -1, rnew)) {
 	    current_rotation = rnew;
 	    draw_piece(1);
-	    io->draw_own_field();
+	    io.draw_own_field();
 	} else {
 	    draw_piece(1);
 	}
@@ -944,12 +942,12 @@ void tetris_input(int c)
       case K_LEFT:	/* Move left */
 	if (piece_waiting)
 	    break;
-	if (x + pd->left > 0) {
+	if (x + pd.left > 0) {
 	    draw_piece(0);
 	    if (!piece_overlaps(current_x-1, -1, -1)) {
 		current_x--;
 		draw_piece(1);
-		io->draw_own_field();
+		io.draw_own_field();
 	    } else {
 		draw_piece(1);
 	    }
@@ -959,12 +957,12 @@ void tetris_input(int c)
       case K_RIGHT:	/* Move right */
 	if (piece_waiting)
 	    break;
-	if (x + pd->right < FIELD_WIDTH-1) {
+	if (x + pd.right < FIELD_WIDTH-1) {
 	    draw_piece(0);
 	    if (!piece_overlaps(current_x+1, -1, -1)) {
 		current_x++;
 		draw_piece(1);
-		io->draw_own_field();
+		io.draw_own_field();
 	    } else {
 		draw_piece(1);
 	    }
@@ -982,7 +980,7 @@ void tetris_input(int c)
 	    break;
 	draw_piece(0);
 	ynew = current_y+1;
-	while (y + pd->bottom < FIELD_HEIGHT && !piece_overlaps(-1,ynew,-1)) {
+	while (y + pd.bottom < FIELD_HEIGHT && !piece_overlaps(-1,ynew,-1)) {
 	    ynew++;
 	    y++;
 	}
@@ -1001,9 +999,9 @@ void tetris_input(int c)
 	if (specials[0] == -1)
 	    break;
 	if (special_capacity > 1)
-	    memmove(specials, specials+1, special_capacity-1);
+	    memmove(specials.ptr, specials.ptr+1, special_capacity-1);
 	specials[special_capacity-1] = -1;
-	io->draw_specials();
+	io.draw_specials();
 	break;
 
       case '1':
@@ -1012,7 +1010,7 @@ void tetris_input(int c)
       case '4':
       case '5':
       case '6': {
-	char buf[2];
+	char[2] buf;
 
 	c -= '0';
 	if (!players[c-1])
@@ -1020,27 +1018,21 @@ void tetris_input(int c)
 	if (specials[0] == -1)
 	    break;
 	sockprintf(server_sock, "sb %d %c %d",
-			c, special_chars[(int) specials[0]], my_playernum);
-	buf[0] = special_chars[(int) specials[0]];
+			c, special_chars[cast(int)specials[0]], my_playernum);
+	buf[0] = special_chars[cast(int)specials[0]];
 	buf[1] = 0;
-	do_special(buf, my_playernum, c);
+	do_special(buf.ptr, my_playernum, c);
 	if (special_capacity > 1)
-	    memmove(specials, specials+1, special_capacity-1);
+	    memmove(specials.ptr, specials.ptr+1, special_capacity-1);
 	specials[special_capacity-1] = -1;
-	io->draw_specials();
+	io.draw_specials();
 	break;
       }
 
       case 't':
 	gmsg_active = 1;
-	io->draw_gmsg_input(gmsg_buffer, gmsg_pos);
+	io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
 	break;
-
-    } /* switch (c) */
+	default: assert(0);
+    }
 }
-
-/*************************************************************************/
-
-#endif	/* !SERVER_ONLY */
-
-/*************************************************************************/
