@@ -100,8 +100,9 @@ int wait_for_input(int msec) {
 	tv.tv_sec = msec / 1000;
 	tv.tv_usec = (msec * 1000) % 1000000;
 	while (select(server_sock + 1, &fds, null, null, msec < 0 ? null : &tv) < 0) {
-		if (errno != EINTR)
+		if (errno != EINTR) {
 			perror("Warning: select() failed");
+		}
 	}
 	if (FD_ISSET(0, &fds)) {
 		c = getch();
@@ -109,56 +110,59 @@ int wait_for_input(int msec) {
 			escape = 1;
 			c = wait_for_input(1000);
 			escape = 0;
-			if (c < 0)
+			if (c < 0) {
 				return 27;
-			else
+			} else {
 				return c;
+			}
 		}
-		if (c == KEY_UP)
+		if (c == KEY_UP) {
 			return K_UP;
-		else if (c == KEY_DOWN)
+		} else if (c == KEY_DOWN) {
 			return K_DOWN;
-		else if (c == KEY_LEFT)
+		} else if (c == KEY_LEFT) {
 			return K_LEFT;
-		else if (c == KEY_RIGHT)
+		} else if (c == KEY_RIGHT) {
 			return K_RIGHT;
-		else if (c == KEY_F(1) || c == ('1' | 0x80) || (escape && c == '1'))
+		} else if (c == KEY_F(1) || c == ('1' | 0x80) || (escape && c == '1')) {
 			return K_F1;
-		else if (c == KEY_F(2) || c == ('2' | 0x80) || (escape && c == '2'))
+		} else if (c == KEY_F(2) || c == ('2' | 0x80) || (escape && c == '2')) {
 			return K_F2;
-		else if (c == KEY_F(3) || c == ('3' | 0x80) || (escape && c == '3'))
+		} else if (c == KEY_F(3) || c == ('3' | 0x80) || (escape && c == '3')) {
 			return K_F3;
-		else if (c == KEY_F(4) || c == ('4' | 0x80) || (escape && c == '4'))
+		} else if (c == KEY_F(4) || c == ('4' | 0x80) || (escape && c == '4')) {
 			return K_F4;
-		else if (c == KEY_F(5) || c == ('5' | 0x80) || (escape && c == '5'))
+		} else if (c == KEY_F(5) || c == ('5' | 0x80) || (escape && c == '5')) {
 			return K_F5;
-		else if (c == KEY_F(6) || c == ('6' | 0x80) || (escape && c == '6'))
+		} else if (c == KEY_F(6) || c == ('6' | 0x80) || (escape && c == '6')) {
 			return K_F6;
-		else if (c == KEY_F(7) || c == ('7' | 0x80) || (escape && c == '7'))
+		} else if (c == KEY_F(7) || c == ('7' | 0x80) || (escape && c == '7')) {
 			return K_F7;
-		else if (c == KEY_F(8) || c == ('8' | 0x80) || (escape && c == '8'))
+		} else if (c == KEY_F(8) || c == ('8' | 0x80) || (escape && c == '8')) {
 			return K_F8;
-		else if (c == KEY_F(9) || c == ('9' | 0x80) || (escape && c == '9'))
+		} else if (c == KEY_F(9) || c == ('9' | 0x80) || (escape && c == '9')) {
 			return K_F9;
-		else if (c == KEY_F(10) || c == ('0' | 0x80) || (escape && c == '0'))
+		} else if (c == KEY_F(10) || c == ('0' | 0x80) || (escape && c == '0')) {
 			return K_F10;
-		else if (c == KEY_F(11))
+		} else if (c == KEY_F(11)) {
 			return K_F11;
-		else if (c == KEY_F(12))
+		} else if (c == KEY_F(12)) {
 			return K_F12;
-		else if (c == KEY_BACKSPACE)
+		} else if (c == KEY_BACKSPACE) {
 			return 8;
-		else if (c >= 0x0100)
+		} else if (c >= 0x0100) {
 			return K_INVALID;
-		else if (c == 7) /* ^G */
+		} else if (c == 7) { /* ^G */
 			return 27; /* Escape */
-		else
+		} else {
 			return c;
+		}
 	}  /* if (FD_ISSET(0, &fds)) */
-	else if (FD_ISSET(server_sock, &fds))
+	else if (FD_ISSET(server_sock, &fds)) {
 		return -1;
-	else
+	} else {
 		return -2; /* out of time */
+	}
 }
 
 /*************************************************************************/
@@ -213,16 +217,19 @@ long getcolor(int fg, int bg) {
 		colors[0][0] = COLOR_WHITE;
 		colors[0][1] = COLOR_BLACK;
 	}
-	if (fg == COLOR_WHITE && bg == COLOR_BLACK)
+	if (fg == COLOR_WHITE && bg == COLOR_BLACK) {
 		return COLOR_PAIR(0);
+	}
 	for (i = 1; i < MAXCOLORS; i++) {
-		if (colors[i][0] == fg && colors[i][1] == bg)
+		if (colors[i][0] == fg && colors[i][1] == bg) {
 			return COLOR_PAIR(i);
+		}
 	}
 	for (i = 1; i < MAXCOLORS; i++) {
 		if (colors[i][0] < 0) {
-			if (init_pair(cast(short) i, cast(short) fg, cast(short) bg) == ERR)
+			if (init_pair(cast(short) i, cast(short) fg, cast(short) bg) == ERR) {
 				continue;
+			}
 			colors[i][0] = fg;
 			colors[i][1] = bg;
 			return COLOR_PAIR(i);
@@ -249,8 +256,9 @@ void screen_setup() {
 	keypad(stdscr, 1);
 	leaveok(stdscr, 1);
 	has_color = has_colors();
-	if (has_color)
+	if (has_color) {
 		start_color();
+	}
 	getmaxyx(stdscr, scrheight, scrwidth);
 	scrwidth--; /* Don't draw in last column--this can cause scroll */
 
@@ -287,14 +295,18 @@ void screen_setup() {
 /* Redraw everything on the screen. */
 
 void screen_refresh() {
-	if (gmsg_inputwin)
+	if (gmsg_inputwin) {
 		touchline(stdscr, gmsg_inputpos, gmsg_inputheight);
-	if (plinebuf.win)
+	}
+	if (plinebuf.win) {
 		touchline(stdscr, plinebuf.y, plinebuf.height);
-	if (gmsgbuf.win)
+	}
+	if (gmsgbuf.win) {
 		touchline(stdscr, gmsgbuf.y, gmsgbuf.height);
-	if (attdefbuf.win)
+	}
+	if (attdefbuf.win) {
 		touchline(stdscr, attdefbuf.y, attdefbuf.height);
+	}
 	wnoutrefresh(stdscr);
 	doupdate();
 }
@@ -316,15 +328,18 @@ void screen_redraw() {
 
 void outline(TextBuffer* buf, const char* s) {
 	if (buf.line == buf.height) {
-		if (buf.win)
+		if (buf.win) {
 			scroll(buf.win);
+		}
 		memmove(buf.text, buf.text + 1, (buf.height - 1) * (char*).sizeof);
 		buf.line--;
 	}
-	if (buf.win)
+	if (buf.win) {
 		mvwaddstr(buf.win, buf.line, 0, s);
-	if (s != buf.text[buf.line]) /* check for restoring display */
+	}
+	if (s != buf.text[buf.line]) { /* check for restoring display */
 		buf.text[buf.line] = strdup(s);
+	}
 	buf.line++;
 }
 
@@ -348,35 +363,43 @@ void draw_text(int bufnum, const(char)* s) {
 		default:
 			return;
 	}
-	if (!buf.text)
+	if (!buf.text) {
 		return;
+	}
 	if (buf.win) {
 		getyx(stdscr, y, x);
 		attrset(getcolor(COLOR_WHITE, COLOR_BLACK));
 	}
-	while (*s && isspace(*s))
+	while (*s && isspace(*s)) {
 		s++;
+	}
 	while (strlen(s) > buf.width - indent) {
 		t = s + buf.width - indent;
-		while (t >= s && !isspace(*t))
+		while (t >= s && !isspace(*t)) {
 			t--;
-		while (t >= s && isspace(*t))
+		}
+		while (t >= s && isspace(*t)) {
 			t--;
+		}
 		t++;
-		if (t < s)
+		if (t < s) {
 			t = s + buf.width - indent;
-		if (indent > 0)
+		}
+		if (indent > 0) {
 			sprintf(str.ptr, "%*s".ptr, indent, "".ptr);
+		}
 		strncpy(str.ptr + indent, s, t - s);
 		str[t - s + indent] = 0;
 		outline(buf, str.ptr);
 		indent = 2;
-		while (isspace(*t))
+		while (isspace(*t)) {
 			t++;
+		}
 		s = t;
 	}
-	if (indent > 0)
+	if (indent > 0) {
 		sprintf(str.ptr, "%*s".ptr, indent, "".ptr);
+	}
 	strcpy(str.ptr + indent, s);
 	outline(buf, str.ptr);
 	if (buf.win) {
@@ -427,8 +450,9 @@ void clear_text(int bufnum) {
 
 void restore_text(TextBuffer* buf) {
 	buf.line = 0;
-	while (buf.line < buf.height && buf.text[buf.line])
+	while (buf.line < buf.height && buf.text[buf.line]) {
 		outline(buf, buf.text[buf.line]);
+	}
 }
 
 /*************************************************************************/
@@ -447,10 +471,11 @@ void open_textwin(TextBuffer* buf) {
 		buf.win = subwin(stdscr, buf.height, buf.width, buf.y, buf.x);
 		scrollok(buf.win, 1);
 	}
-	if (!buf.text)
+	if (!buf.text) {
 		*buf.text = cast(char*) calloc(buf.height, (char*).sizeof);
-	else
+	} else {
 		restore_text(buf);
+	}
 }
 
 /*************************************************************************/
@@ -474,8 +499,9 @@ void setup_fields() {
 	char[32] buf;
 
 	if (!(tile_chars[0] & A_ATTRIBUTES)) {
-		for (i = 1; i < 15; i++)
+		for (i = 1; i < 15; i++) {
 			tile_chars[i] |= A_BOLD;
+		}
 		tile_chars[1] |= getcolor(COLOR_BLUE, COLOR_BLACK);
 		tile_chars[2] |= getcolor(COLOR_YELLOW, COLOR_BLACK);
 		tile_chars[3] |= getcolor(COLOR_GREEN, COLOR_BLACK);
@@ -535,12 +561,14 @@ void setup_fields() {
 	y = own_coord[1];
 	sprintf(buf.ptr, "%d", my_playernum);
 	mvaddstr(y, x - 1, buf.ptr);
-	for (i = 2; i < FIELD_HEIGHT * 2 && players[my_playernum - 1][i - 2]; i++)
+	for (i = 2; i < FIELD_HEIGHT * 2 && players[my_playernum - 1][i - 2]; i++) {
 		mvaddch(y + i, x - 1, players[my_playernum - 1][i - 2]);
+	}
 	if (teams[my_playernum - 1][0] != '\0') {
 		mvaddstr(y, x + FIELD_WIDTH * 2 + 2, "T".ptr);
-		for (i = 2; i < FIELD_HEIGHT * 2 && teams[my_playernum - 1][i - 2]; i++)
+		for (i = 2; i < FIELD_HEIGHT * 2 && teams[my_playernum - 1][i - 2]; i++) {
 			mvaddch(y + i, x + FIELD_WIDTH * 2 + 2, teams[my_playernum - 1][i - 2]);
+		}
 	}
 	move(y, x);
 	vline(MY_VLINE, FIELD_HEIGHT * 2);
@@ -571,12 +599,14 @@ void setup_fields() {
 			sprintf(buf.ptr, "%d", j + 2);
 			mvaddstr(y, x - 1, buf.ptr);
 			if (players[j + 1]) {
-				for (i = 0; i < FIELD_HEIGHT - 2 && players[j + 1][i]; i++)
+				for (i = 0; i < FIELD_HEIGHT - 2 && players[j + 1][i]; i++) {
 					mvaddch(y + i + 2, x - 1, players[j + 1][i]);
+				}
 				if (teams[j + 1][0] != '\0') {
 					mvaddstr(y, x + FIELD_WIDTH + 2, "T".ptr);
-					for (i = 0; i < FIELD_HEIGHT - 2 && teams[j + 1][i]; i++)
+					for (i = 0; i < FIELD_HEIGHT - 2 && teams[j + 1][i]; i++) {
 						mvaddch(y + i + 2, x + FIELD_WIDTH + 2, teams[j + 1][i]);
+					}
 				}
 			}
 			draw_other_field(j + 2);
@@ -584,12 +614,14 @@ void setup_fields() {
 			sprintf(buf.ptr, "%d", j + 1);
 			mvaddstr(y, x - 1, buf.ptr);
 			if (players[j]) {
-				for (i = 0; i < FIELD_HEIGHT - 2 && players[j][i]; i++)
+				for (i = 0; i < FIELD_HEIGHT - 2 && players[j][i]; i++) {
 					mvaddch(y + i + 2, x - 1, players[j][i]);
+				}
 				if (teams[j][0] != '\0') {
 					mvaddstr(y, x + FIELD_WIDTH + 2, "T".ptr);
-					for (i = 0; i < FIELD_HEIGHT - 2 && teams[j][i]; i++)
+					for (i = 0; i < FIELD_HEIGHT - 2 && teams[j][i]; i++) {
 						mvaddch(y + i + 2, x + FIELD_WIDTH + 2, teams[j][i]);
+					}
 				}
 			}
 			draw_other_field(j + 1);
@@ -623,8 +655,9 @@ void setup_fields() {
 		mvaddstr(y, x, "Lines:".ptr);
 		mvaddstr(y + 1, x, "Level:".ptr);
 	}
-	if (playing_game)
+	if (playing_game) {
 		draw_status();
+	}
 
 	attdefbuf.x = wide_screen ? alt_attdef_coord[0] : attdef_coord[0];
 	attdefbuf.y = wide_screen ? alt_attdef_coord[1] : attdef_coord[1];
@@ -651,8 +684,9 @@ void draw_own_field() {
 	Field* f = &fields[my_playernum - 1];
 	int[4] shadow = [-1, -1, -1, -1];
 
-	if (dispmode != MODE_FIELDS)
+	if (dispmode != MODE_FIELDS) {
 		return;
+	}
 
 	/* XXX: Code duplication with tetris.c:draw_piece(). --pasky */
 	if (playing_game && cast_shadow) {
@@ -666,8 +700,9 @@ void draw_own_field() {
 				continue;
 			}
 			for (i = 0; i < 4; i++) {
-				if (*shape++)
+				if (*shape++) {
 					shadow[i] = y + j;
+				}
 			}
 		}
 	}
@@ -698,8 +733,9 @@ void draw_own_field() {
 		gmsg_inputwin = null;
 		draw_gmsg_input(null, -1);
 	}
-	if (!field_redraw)
+	if (!field_redraw) {
 		screen_refresh();
+	}
 }
 
 /*************************************************************************/
@@ -710,11 +746,13 @@ void draw_other_field(int player) {
 	int x, y, x0, y0;
 	Field* f;
 
-	if (dispmode != MODE_FIELDS)
+	if (dispmode != MODE_FIELDS) {
 		return;
+	}
 	f = &fields[player - 1];
-	if (player > my_playernum)
+	if (player > my_playernum) {
 		player--;
+	}
 	player--;
 	x0 = other_coord[player][0] + 1;
 	y0 = other_coord[player][1];
@@ -729,8 +767,9 @@ void draw_other_field(int player) {
 		gmsg_inputwin = null;
 		draw_gmsg_input(null, -1);
 	}
-	if (!field_redraw)
+	if (!field_redraw) {
 		screen_refresh();
+	}
 }
 
 /*************************************************************************/
@@ -752,8 +791,9 @@ void draw_status() {
 	y = wide_screen ? alt_next_coord[1] : next_coord[1];
 	if (get_shape(next_piece, 0, shape) == 0) {
 		for (j = 0; j < 4; j++) {
-			if (!wide_screen)
+			if (!wide_screen) {
 				move(y + j, x);
+			}
 			for (i = 0; i < 4; i++) {
 				if (wide_screen) {
 					move(y + j * 2, x + i * 2);
@@ -762,8 +802,9 @@ void draw_status() {
 					move(y + j * 2 + 1, x + i * 2);
 					addch(tile_chars[cast(int) shape[j][i]]);
 					addch(tile_chars[cast(int) shape[j][i]]);
-				} else
+				} else {
 					addch(tile_chars[cast(int) shape[j][i]]);
+				}
 			}
 		}
 	}
@@ -781,8 +822,9 @@ static immutable string[] descs = [
 void draw_specials() {
 	int x, y, i;
 
-	if (dispmode != MODE_FIELDS)
+	if (dispmode != MODE_FIELDS) {
 		return;
+	}
 	x = own_coord[0];
 	y = own_coord[1] + 45;
 	mvaddstr(y, x, descs[specials[0] + 1].ptr);
@@ -797,8 +839,9 @@ void draw_specials() {
 		addch(tile_chars[0]);
 		x++;
 	}
-	if (!field_redraw)
+	if (!field_redraw) {
 		screen_refresh();
+	}
 }
 
 /*************************************************************************/
@@ -815,18 +858,22 @@ void draw_attdef(const char* type, int from, int to) {
 
 	width = other_coord[4][0] - attdef_coord[0] - 1;
 	for (i = 0; msgs[i][0]; i++) {
-		if (strcmp(type, msgs[i][0].ptr) == 0)
+		if (strcmp(type, msgs[i][0].ptr) == 0) {
 			break;
+		}
 	}
-	if (!msgs[i][0])
+	if (!msgs[i][0]) {
 		return;
+	}
 	strcpy(buf.ptr, msgs[i][1].ptr);
-	if (to != 0)
+	if (to != 0) {
 		sprintf(buf.ptr + strlen(buf.ptr), " on %s", players[to - 1]);
-	if (from == 0)
+	}
+	if (from == 0) {
 		sprintf(buf.ptr + strlen(buf.ptr), " by Server");
-	else
+	} else {
 		sprintf(buf.ptr + strlen(buf.ptr), " by %s", players[from - 1]);
+	}
 	draw_text(BUFFER_ATTDEF, buf.ptr);
 }
 
@@ -839,14 +886,17 @@ void draw_gmsg_input(char* s, int pos) {
 	static char* last_s;
 	static int last_pos;
 
-	if (s)
+	if (s) {
 		last_s = s;
-	else
+	} else {
 		s = last_s;
-	if (pos >= 0)
+	}
+
+	if (pos >= 0) {
 		last_pos = pos;
-	else
+	} else {
 		pos = last_pos;
+	}
 
 	attrset(getcolor(COLOR_WHITE, COLOR_BLACK));
 
@@ -871,12 +921,14 @@ void draw_gmsg_input(char* s, int pos) {
 	} else {
 		if (pos < start + 8) {
 			start = pos - 8;
-			if (start < 0)
+			if (start < 0) {
 				start = 0;
+			}
 		} else if (pos > start + scrwidth - 15) {
 			start = pos - (scrwidth - 15);
-			if (start > strlen(s) - (scrwidth - 7))
+			if (start > strlen(s) - (scrwidth - 7)) {
 				start = cast(int)(strlen(s) - (scrwidth - 7));
+			}
 		}
 		mvwaddnstr(gmsg_inputwin, 1, 6, s + start, scrwidth - 6);
 		wmove(gmsg_inputwin, 1, 6 + (pos - start));
@@ -950,12 +1002,14 @@ void draw_partyline_input(const char* s, int pos) {
 	} else {
 		if (pos < start + 8) {
 			start = pos - 8;
-			if (start < 0)
+			if (start < 0) {
 				start = 0;
+			}
 		} else if (pos > start + scrwidth - 11) {
 			start = pos - (scrwidth - 11);
-			if (start > strlen(s) - (scrwidth - 3))
+			if (start > strlen(s) - (scrwidth - 3)) {
 				start = cast(int)(strlen(s) - (scrwidth - 3));
+			}
 		}
 		mvaddnstr(scrheight - 3, 2, s + start, scrwidth - 2);
 		move(scrheight - 3, 2 + (pos - start));
@@ -978,11 +1032,13 @@ void setup_winlist() {
 
 	for (i = 0; i < MAXWINLIST && winlist[i].name.ptr; i++) {
 		x = cast(int)(scrwidth / 2 - strlen(winlist[i].name.ptr));
-		if (x < 0)
+		if (x < 0) {
 			x = 0;
+		}
 		if (winlist[i].team) {
-			if (x < 4)
+			if (x < 4) {
 				x = 4;
+			}
 			mvaddstr(i * 2, x - 4, "<T>".ptr);
 		}
 		mvaddstr(i * 2, x, winlist[i].name.ptr);
@@ -992,8 +1048,9 @@ void setup_winlist() {
 			snprintf(buf.ptr + strlen(buf.ptr), buf.sizeof - strlen(buf.ptr), "   %d.%02d", avg100 / 100, avg100 % 100);
 		}
 		x += strlen(winlist[i].name.ptr) + 2;
-		if (x > scrwidth - strlen(buf.ptr))
+		if (x > scrwidth - strlen(buf.ptr)) {
 			x = cast(int)(scrwidth - strlen(buf.ptr));
+		}
 		mvaddstr(i * 2, x, buf.ptr);
 	}
 
@@ -1013,7 +1070,24 @@ void setup_winlist() {
 /************************** Interface declaration ************************/
 /*************************************************************************/
 
-__gshared Interface_ tty_interface = Interface_(&wait_for_input, &screen_setup, &screen_refresh, &screen_redraw, &draw_text, &clear_text, &setup_fields, &draw_own_field, &draw_other_field,
-	&draw_status, &draw_specials, &draw_attdef, &draw_gmsg_input, &clear_gmsg_input, &setup_partyline, &draw_partyline_input, &setup_winlist);
+__gshared Interface_ tty_interface = Interface_(
+	&wait_for_input,
+	&screen_setup,
+	&screen_refresh,
+	&screen_redraw,
+	&draw_text,
+	&clear_text,
+	&setup_fields,
+	&draw_own_field,
+	&draw_other_field,
+	&draw_status,
+	&draw_specials,
+	&draw_attdef,
+	&draw_gmsg_input,
+	&clear_gmsg_input,
+	&setup_partyline,
+	&draw_partyline_input,
+	&setup_winlist
+);
 
 /*************************************************************************/

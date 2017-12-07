@@ -178,8 +178,9 @@ int get_shape(int piece, int rotation, char[4][4] buf) {
 	int x, y;
 	char* shape;
 
-	if (piece < 0 || piece > 6 || rotation < 0 || rotation > 3)
+	if (piece < 0 || piece > 6 || rotation < 0 || rotation > 3) {
 		return -1;
+	}
 	shape = cast(char*) piecedata[piece][rotation].shape;
 	for (y = 0; y < 4; y++) {
 		for (x = 0; x < 4; x++) {
@@ -200,8 +201,9 @@ int level_delay() {
 	int level = levels[my_playernum - 1];
 	int delay = 1000;
 
-	while (--level)
+	while (--level) {
 		delay = (delay * 69 + 35) / 70; /* multiply by 69/70 and round */
+	}
 	return delay;
 }
 
@@ -217,22 +219,27 @@ int piece_overlaps(int x, int y, int rot) {
 	PieceData* pd;
 	int i, j, ok;
 
-	if (x < 0)
+	if (x < 0) {
 		x = current_x;
-	if (y < 0)
+	}
+	if (y < 0) {
 		y = current_y;
-	if (rot < 0)
+	}
+	if (rot < 0) {
 		rot = current_rotation;
+	}
 	pd = &piecedata[current_piece][rot];
 	x -= pd.hot_x;
 	y -= pd.hot_y;
 	ok = 1;
 	for (j = 0; ok && j < 4; j++) {
-		if (y + j < 0)
+		if (y + j < 0) {
 			continue;
+		}
 		for (i = 0; ok && i < 4; i++) {
-			if (pd.shape[j][i] && (y + j >= FIELD_HEIGHT || x + i < 0 || x + i >= FIELD_WIDTH || (*f)[y + j][x + i]))
+			if (pd.shape[j][i] && (y + j >= FIELD_HEIGHT || x + i < 0 || x + i >= FIELD_WIDTH || (*f)[y + j][x + i])) {
 				ok = 0;
+			}
 		}
 	}
 	return !ok;
@@ -258,8 +265,9 @@ void draw_piece(int draw) {
 			continue;
 		}
 		for (i = 0; i < 4; i++) {
-			if (*shape++)
+			if (*shape++) {
 				(*f)[y + j][x + i] = c;
+			}
 		}
 	}
 }
@@ -281,8 +289,9 @@ int clear_lines(int add_specials) {
 				break;
 			}
 		}
-		if (full)
+		if (full) {
 			count++;
+		}
 	}
 
 	memset(new_specials.ptr, 0, new_specials.sizeof);
@@ -296,19 +305,22 @@ int clear_lines(int add_specials) {
 		}
 		if (full) {
 			for (x = 0; x < FIELD_WIDTH; x++) {
-				if ((*f)[y][x] > 5)
+				if ((*f)[y][x] > 5) {
 					new_specials[(*f)[y][x] - 6]++;
+				}
 			}
-			if (y > 0)
+			if (y > 0) {
 				memmove((*f)[1].ptr, (*f)[0].ptr, FIELD_WIDTH * y);
+			}
 			memset((*f)[0].ptr, 0, FIELD_WIDTH);
 		}
 	}
 
 	if (add_specials) {
 		int pos = 0;
-		while (pos < special_capacity && specials[pos] >= 0)
+		while (pos < special_capacity && specials[pos] >= 0) {
 			pos++;
+		}
 		for (i = 0; i < count && pos < special_capacity; i++) {
 			for (j = 0; j < 9 && pos < special_capacity; j++) {
 				for (k = 0; k < new_specials[j] && pos < special_capacity; k++) {
@@ -316,13 +328,15 @@ int clear_lines(int add_specials) {
 						memmove(specials.ptr + 1, specials.ptr, pos);
 						specials[0] = cast(byte) j;
 						pos++;
-					} else
+					} else {
 						specials[pos++] = cast(byte) j;
+					}
 				}
 			}
 		}
-		if (pos < special_capacity)
+		if (pos < special_capacity) {
 			specials[pos] = -1;
+		}
 		io.draw_specials();
 	}
 
@@ -343,19 +357,22 @@ void place_specials(int num) {
 
 	for (y = 0; y < FIELD_HEIGHT; y++) {
 		for (x = 0; x < FIELD_WIDTH; x++) {
-			if ((*f)[y][x])
+			if ((*f)[y][x]) {
 				nblocks++;
+			}
 		}
 	}
-	if (num > nblocks)
+	if (num > nblocks) {
 		num = nblocks;
+	}
 	left = num;
 	tries = 10;
 	while (left > 0 && tries > 0) {
 		for (y = 0; left > 0 && y < FIELD_HEIGHT; y++) {
 			for (x = 0; left > 0 && x < FIELD_WIDTH; x++) {
-				if ((*f)[y][x] > 5 || (*f)[y][x] == 0)
+				if ((*f)[y][x] > 5 || (*f)[y][x] == 0) {
 					continue;
+				}
 				if (rand() % nblocks < num) {
 					int which = 0, n = rand() % 100;
 					while (n >= specialfreq[which]) {
@@ -387,8 +404,9 @@ void send_field(Field* oldfield) {
 	if (oldfield) {
 		for (y = 0; y < FIELD_HEIGHT; y++) {
 			for (x = 0; x < FIELD_WIDTH; x++) {
-				if ((*f)[y][x] != (*oldfield)[y][x])
+				if ((*f)[y][x] != (*oldfield)[y][x]) {
 					diff++;
+				}
 			}
 		}
 	} else {
@@ -408,20 +426,21 @@ void send_field(Field* oldfield) {
 						*s++ = cast(char)(x + '3');
 						*s++ = cast(char)(y + '3');
 					}
-				} /* for x */
-			} /* for y */
-		} /* for i (each tile type) */
-	} /* difference check */
+				}
+			}
+		}
+	}
 	/* -4 below is to adjust for "f %d " */
 	if (diff >= (FIELD_WIDTH * FIELD_HEIGHT) / 2 || strlen(buf.ptr) - 4 > FIELD_WIDTH * FIELD_HEIGHT) {
 		static immutable string specials = "acnrsbgqo";
 		s = buf.ptr + sprintf(buf.ptr, "f %d ", my_playernum);
 		for (y = 0; y < FIELD_HEIGHT; y++) {
 			for (x = 0; x < FIELD_WIDTH; x++) {
-				if ((*f)[y][x] > 5)
+				if ((*f)[y][x] > 5) {
 					*s++ = specials[(*f)[y][x] - 6];
-				else
+				} else {
 					*s++ = cast(char)((*f)[y][x] + '0');
+				}
 			}
 		}
 	}
@@ -457,8 +476,9 @@ void new_piece() {
 				Field* f = &fields[my_playernum - 1];
 				int x, y;
 				for (y = 0; y < FIELD_HEIGHT; y++) {
-					for (x = 0; x < FIELD_WIDTH; x++)
+					for (x = 0; x < FIELD_WIDTH; x++) {
 						(*f)[y][x] = cast(char)(rand() % 5 + 1);
+					}
 				}
 				send_field(null);
 				sockprintf(server_sock, "playerlost %d", my_playernum);
@@ -509,20 +529,23 @@ void step_down() {
 
 		memcpy(&oldfield, f, oldfield.sizeof);
 		draw_piece(1);
-		if (last_special > lines) /* i.e. from a previous game */
+		if (last_special > lines) { /* i.e. from a previous game */
 			last_special = 0;
+		}
 		completed = clear_lines(1);
 		lines += completed;
 		if (old_mode && completed > 1) {
-			if (completed < 4)
+			if (completed < 4) {
 				completed--;
+			}
 			sockprintf(server_sock, "sb 0 cs%d %d", completed, my_playernum);
 			sprintf(buf.ptr, "cs%d", completed);
 			io.draw_attdef(buf.ptr, my_playernum, 0);
 		}
 		level = initial_level + (lines / lines_per_level) * level_inc;
-		if (level > 100)
+		if (level > 100) {
 			level = 100;
+		}
 		levels[my_playernum] = level;
 		if (completed > 0) {
 			sockprintf(server_sock, "lvl %d %d", my_playernum, level);
@@ -553,13 +576,16 @@ void do_special(const char* type, int from, int to) {
 
 	io.draw_attdef(type, from, to);
 
-	if (!playing_game)
+	if (!playing_game) {
 		return;
-	if (to != 0 && to != my_playernum && !(from == my_playernum && *type == 's'))
+	}
+	if (to != 0 && to != my_playernum && !(from == my_playernum && *type == 's')) {
 		return;
+	}
 
-	if (!piece_waiting)
+	if (!piece_waiting) {
 		draw_piece(0);
+	}
 
 	memcpy(&oldfield, f, Field.sizeof);
 
@@ -570,16 +596,18 @@ void do_special(const char* type, int from, int to) {
 		if (!teams[my_playernum - 1] || !teams[from - 1] || strcmp(teams[my_playernum - 1], teams[from - 1]) != 0) {
 			while (nlines--) {
 				memmove((*f)[0].ptr, (*f)[1].ptr, FIELD_WIDTH * (FIELD_HEIGHT - 1));
-				for (x = 0; x < FIELD_WIDTH; x++)
+				for (x = 0; x < FIELD_WIDTH; x++) {
 					f[21][x] = cast(char)(1 + rand() % 5);
+				}
 				f[FIELD_HEIGHT - 1][rand() % FIELD_WIDTH] = 0;
 			}
 		}
 
 	} else if (*type == 'a') {
 		memmove((*f)[0].ptr, f[1].ptr, FIELD_WIDTH * (FIELD_HEIGHT - 1));
-		for (x = 0; x < FIELD_WIDTH; x++)
+		for (x = 0; x < FIELD_WIDTH; x++) {
 			f[21][x] = cast(char)(1 + rand() % 5);
+		}
 		f[FIELD_HEIGHT - 1][rand() % FIELD_WIDTH] = 0;
 		f[FIELD_HEIGHT - 1][rand() % FIELD_WIDTH] = 0;
 		f[FIELD_HEIGHT - 1][rand() % FIELD_WIDTH] = 0;
@@ -587,8 +615,9 @@ void do_special(const char* type, int from, int to) {
 	} else if (*type == 'b') {
 		for (y = 0; y < FIELD_HEIGHT; y++) {
 			for (x = 0; x < FIELD_WIDTH; x++) {
-				if ((*f)[y][x] > 5)
+				if ((*f)[y][x] > 5) {
 					(*f)[y][x] = cast(char)(rand() % 5 + 1);
+				}
 			}
 		}
 
@@ -603,16 +632,20 @@ void do_special(const char* type, int from, int to) {
 				if ((*f)[y][x] == 0) {
 					int y2, allclear = 1;
 					for (y2 = y - 1; allclear && y2 >= 0; y2--) {
-						if ((*f)[y2][x])
+						if ((*f)[y2][x]) {
 							allclear = 0;
+						}
 					}
-					if (allclear)
+					if (allclear) {
 						break;
-					for (y2 = y - 1; y2 >= 0; y2--)
+					}
+					for (y2 = y - 1; y2 >= 0; y2--) {
 						(*f)[y2 + 1][x] = (*f)[y2][x];
+					}
 					(*f)[0][x] = 0;
-				} else
+				} else {
 					y--;
+				}
 			}
 		}
 		clear_lines(0);
@@ -625,17 +658,21 @@ void do_special(const char* type, int from, int to) {
 
 		for (y = 0; y < FIELD_HEIGHT; y++) {
 			for (x = 0; x < FIELD_WIDTH; x++) {
-				if ((*f)[y][x] != 6 + SPECIAL_O)
+				if ((*f)[y][x] != 6 + SPECIAL_O) {
 					continue;
+				}
 				(*f)[y][x] = 0;
 				for (y2 = y - 1; y2 <= y + 1; y2++) {
-					if (y2 < 0 || y2 >= FIELD_HEIGHT)
+					if (y2 < 0 || y2 >= FIELD_HEIGHT) {
 						continue;
+					}
 					for (x2 = x - 1; x2 <= x + 1; x2++) {
-						if (x2 < 0 || x2 >= FIELD_WIDTH)
+						if (x2 < 0 || x2 >= FIELD_WIDTH) {
 							continue;
-						if (!windows_mode && !(*f)[y2][x2])
+						}
+						if (!windows_mode && !(*f)[y2][x2]) {
 							continue;
+						}
 						tries = 10;
 						while (tries--) {
 							xnew = random() % FIELD_WIDTH;
@@ -658,17 +695,19 @@ void do_special(const char* type, int from, int to) {
 			if (r < 0) {
 				int save = (*f)[y][0];
 				memmove((*f)[y].ptr, (*f)[y].ptr + 1, FIELD_WIDTH - 1);
-				if (windows_mode)
+				if (windows_mode) {
 					(*f)[y][FIELD_WIDTH - 1] = 0;
-				else
+				} else {
 					(*f)[y][FIELD_WIDTH - 1] = cast(char) save;
+				}
 			} else if (r > 0) {
 				int save = (*f)[y][FIELD_WIDTH - 1];
 				memmove((*f)[y].ptr + 1, (*f)[y].ptr, FIELD_WIDTH - 1);
-				if (windows_mode)
+				if (windows_mode) {
 					(*f)[y][0] = 0;
-				else
+				} else {
 					(*f)[y][0] = cast(char) save;
+				}
 			}
 		}
 
@@ -690,20 +729,24 @@ void do_special(const char* type, int from, int to) {
 		memcpy(temp.ptr, fields[from - 1].ptr, Field.sizeof);
 		memcpy(fields[from - 1].ptr, fields[to - 1].ptr, Field.sizeof);
 		memcpy(fields[to - 1].ptr, temp.ptr, Field.sizeof);
-		if (from == my_playernum || to == my_playernum)
+		if (from == my_playernum || to == my_playernum) {
 			memset(fields[my_playernum - 1].ptr, 0, 6 * FIELD_WIDTH);
-		if (from != my_playernum)
+		}
+		if (from != my_playernum) {
 			io.draw_other_field(from);
-		if (to != my_playernum)
+		}
+		if (to != my_playernum) {
 			io.draw_other_field(to);
+		}
 
 	}
 
 	send_field(&oldfield);
 
 	if (!piece_waiting) {
-		while (piece_overlaps(-1, -1, -1))
+		while (piece_overlaps(-1, -1, -1)) {
 			current_y--;
+		}
 		draw_piece(1);
 	}
 	io.draw_own_field();
@@ -775,10 +818,11 @@ void gmsg_move(int how) {
 
 void gmsg_enter() {
 	if (gmsg_buffer.ptr) {
-		if (strncasecmp(gmsg_buffer.ptr, "/me ", 4) == 0)
+		if (strncasecmp(gmsg_buffer.ptr, "/me ", 4) == 0) {
 			sockprintf(server_sock, "gmsg * %s %s", players[my_playernum - 1], gmsg_buffer.ptr + 4);
-		else
+		} else {
 			sockprintf(server_sock, "gmsg <%s> %s", players[my_playernum - 1], gmsg_buffer.ptr);
+		}
 		gmsg_pos = 0;
 		gmsg_buffer = null;
 		io.clear_gmsg_input();
@@ -824,10 +868,11 @@ int tetris_timeout() {
 /* Do something when we hit a timeout. */
 
 void tetris_timeout_action() {
-	if (piece_waiting)
+	if (piece_waiting) {
 		new_piece();
-	else
+	} else {
 		step_down();
+	}
 }
 
 /*************************************************************************/
@@ -844,45 +889,49 @@ void tetris_input(int c) {
 	static int gmsg_active = 0;
 
 	if (gmsg_active) {
-		if (c == 8 || c == 127) /* Backspace or Delete */
+		if (c == 8 || c == 127) { /* Backspace or Delete */
 			gmsg_backspace();
-		else if (c == 4) /* Ctrl-D */
+		} else if (c == 4) { /* Ctrl-D */
 			gmsg_delete();
-		else if (c == 21) /* Ctrl-U */
+		} else if (c == 21) { /* Ctrl-U */
 			gmsg_kill();
-		else if (c == K_LEFT)
+		} else if (c == K_LEFT) {
 			gmsg_move(-1);
-		else if (c == K_RIGHT)
+		} else if (c == K_RIGHT) {
 			gmsg_move(1);
-		else if (c == 1) /* Ctrl-A */
+		} else if (c == 1) { /* Ctrl-A */
 			gmsg_move(-2);
-		else if (c == 5) /* Ctrl-E */
+		} else if (c == 5) { /* Ctrl-E */
 			gmsg_move(2);
-		else if (c == '\r' || c == '\n') {
+		} else if (c == '\r' || c == '\n') {
 			gmsg_enter();
 			gmsg_active = 0;
 		} else if (c == 27) { /* Escape */
 			io.clear_gmsg_input();
 			gmsg_active = 0;
-		} else if (c >= 1 && c <= 0xFF)
+		} else if (c >= 1 && c <= 0xFF) {
 			gmsg_input(c);
+		}
 		return;
 	}
 
-	if (c != 't' && (!playing_game || game_paused))
+	if (c != 't' && (!playing_game || game_paused)) {
 		return;
+	}
 
 	switch (c) {
 		case K_UP: /* Rotate clockwise */
 			case 'x':
-			if (piece_waiting)
+			if (piece_waiting) {
 				break;
+			}
 			rnew = (current_rotation + 1) % 4;
 			pd = &piecedata[current_piece][current_rotation];
 			x = current_x - pd.hot_x;
 			y = current_y - pd.hot_y;
-			if (x + pd.left < 0 || x + pd.right >= FIELD_WIDTH || y + pd.bottom >= FIELD_HEIGHT)
+			if (x + pd.left < 0 || x + pd.right >= FIELD_WIDTH || y + pd.bottom >= FIELD_HEIGHT) {
 				break;
+			}
 			draw_piece(0);
 			if (!piece_overlaps(-1, -1, rnew)) {
 				current_rotation = rnew;
@@ -894,14 +943,16 @@ void tetris_input(int c) {
 			break;
 
 		case 'z': /* Rotate counterclockwise */
-			if (piece_waiting)
+			if (piece_waiting) {
 				break;
+			}
 			rnew = (current_rotation + 3) % 4;
 			pd = &piecedata[current_piece][current_rotation];
 			x = current_x - pd.hot_x;
 			y = current_y - pd.hot_y;
-			if (x + pd.left < 0 || x + pd.right >= FIELD_WIDTH || y + pd.bottom >= FIELD_HEIGHT)
+			if (x + pd.left < 0 || x + pd.right >= FIELD_WIDTH || y + pd.bottom >= FIELD_HEIGHT) {
 				break;
+			}
 			draw_piece(0);
 			if (!piece_overlaps(-1, -1, rnew)) {
 				current_rotation = rnew;
@@ -913,8 +964,9 @@ void tetris_input(int c) {
 			break;
 
 		case K_LEFT: /* Move left */
-			if (piece_waiting)
+			if (piece_waiting) {
 				break;
+			}
 			if (x + pd.left > 0) {
 				draw_piece(0);
 				if (!piece_overlaps(current_x - 1, -1, -1)) {
@@ -928,8 +980,9 @@ void tetris_input(int c) {
 			break;
 
 		case K_RIGHT: /* Move right */
-			if (piece_waiting)
+			if (piece_waiting) {
 				break;
+			}
 			if (x + pd.right < FIELD_WIDTH - 1) {
 				draw_piece(0);
 				if (!piece_overlaps(current_x + 1, -1, -1)) {
@@ -943,14 +996,16 @@ void tetris_input(int c) {
 			break;
 
 		case K_DOWN: /* Down one space */
-			if (piece_waiting)
+			if (piece_waiting) {
 				break;
+			}
 			step_down();
 			break;
 
 		case ' ': /* Down until the piece hits something */
-			if (piece_waiting)
+			if (piece_waiting) {
 				break;
+			}
 			draw_piece(0);
 			ynew = current_y + 1;
 			while (y + pd.bottom < FIELD_HEIGHT && !piece_overlaps(-1, ynew, -1)) {
@@ -960,8 +1015,9 @@ void tetris_input(int c) {
 			ynew--;
 			if (ynew != current_y) {
 				current_y = ynew - 1;
-				if (noslide)
+				if (noslide) {
 					current_y++; /* Don't allow sliding */
+				}
 				step_down();
 			} else {
 				draw_piece(1);
@@ -969,37 +1025,41 @@ void tetris_input(int c) {
 			break;
 
 		case 'd':
-			if (specials[0] == -1)
+			if (specials[0] == -1) {
 				break;
-			if (special_capacity > 1)
+			}
+			if (special_capacity > 1) {
 				memmove(specials.ptr, specials.ptr + 1, special_capacity - 1);
+			}
 			specials[special_capacity - 1] = -1;
 			io.draw_specials();
 			break;
 
 		case '1':
-			case '2':
-			case '3':
-			case '4':
-			case '5':
-			case '6': {
-				char[2] buf;
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+			char[2] buf;
 
-				c -= '0';
-				if (!players[c - 1])
-					break;
-				if (specials[0] == -1)
-					break;
-				sockprintf(server_sock, "sb %d %c %d", c, special_chars[cast(int) specials[0]], my_playernum);
-				buf[0] = special_chars[cast(int) specials[0]];
-				buf[1] = 0;
-				do_special(buf.ptr, my_playernum, c);
-				if (special_capacity > 1)
-					memmove(specials.ptr, specials.ptr + 1, special_capacity - 1);
-				specials[special_capacity - 1] = -1;
-				io.draw_specials();
+			c -= '0';
+			if (!players[c - 1]) {
 				break;
 			}
+			if (specials[0] == -1) {
+				break;
+			}
+			sockprintf(server_sock, "sb %d %c %d", c, special_chars[cast(int) specials[0]], my_playernum);
+			buf[0] = special_chars[cast(int) specials[0]];
+			buf[1] = 0;
+			do_special(buf.ptr, my_playernum, c);
+			if (special_capacity > 1) {
+				memmove(specials.ptr, specials.ptr + 1, special_capacity - 1);
+			}
+			specials[special_capacity - 1] = -1;
+			io.draw_specials();
+			break;
 
 		case 't':
 			gmsg_active = 1;
