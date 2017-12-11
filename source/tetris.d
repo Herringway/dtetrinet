@@ -5,14 +5,13 @@ import dtetrinet.sockets;
 
 import core.time;
 
-import core.stdc.string;
-import core.stdc.stdio;
+deprecated import core.stdc.string : memcpy, memmove, memset, strlen;
+deprecated import core.stdc.stdio : sprintf;
 
-deprecated import core.sys.posix.sys.time;
+import std.datetime;
 
-deprecated import core.sys.posix.stdlib;
+import std.stdio : stderr;
 
-extern (C) int strncasecmp(const char* s1, const char* s2, size_t n);
 
 enum SPECIAL_A = 0;
 enum SPECIAL_C = 1;
@@ -38,12 +37,18 @@ __gshared {
 	int piece_waiting;
 	PieceData[4][7] piecedata;
 	Duration timeout;
+	SysTime lastDelayReset;
 	int last_special;
-	int[7] piecefreq;
-	int[9] specialfreq;
-	int old_mode;
-	int initial_level, lines_per_level, level_inc, level_average;
-	int special_lines, special_count, special_capacity;
+	int[7] piecefreq = [14, 14, 15, 14, 14, 14, 15];
+	int[9] specialfreq = [18, 18, 3, 12, 0, 16, 3, 12, 18];
+	int old_mode = 1;
+	int initial_level = 1;
+	int lines_per_level = 2;
+	int level_inc = 1;
+	int level_average = 1;
+	int special_lines = 1;
+	int special_count = 1;
+	int special_capacity = 18;
 	Field[6] fields;
 	int[6] levels;
 	int lines;
@@ -155,14 +160,14 @@ void init_shapes() {
 							piecedata[i][r].hot_y = y;
 							break;
 						default:
-							fprintf(stderr, "Piece %d rotation %d: " ~ "weird character `%c' at (%d,%d)\n", i, r, shapes[i][y][r][x], x, y);
-							exit(1);
+							stderr.writefln!"Piece %d rotation %d: weird character `%c' at (%d,%d)"(i, r, shapes[i][y][r][x], x, y);
+							assert(0);
 					}
 				}
 			}
 			if (piecedata[i][r].hot_x < 0 || piecedata[i][r].hot_y < 0) {
-				fprintf(stderr, "Piece %d rotation %d missing hot spot!\n", i, r);
-				exit(1);
+				stderr.writefln!"Piece %d rotation %d missing hot spot!"(i, r);
+				assert(0);
 			}
 		}
 	}
@@ -176,15 +181,16 @@ void init_shapes() {
 
 int get_shape(int piece, int rotation, char[4][4] buf) {
 	int x, y;
-	char* shape;
+	char[4][4] shape;
 
 	if (piece < 0 || piece > 6 || rotation < 0 || rotation > 3) {
 		return -1;
 	}
-	shape = cast(char*) piecedata[piece][rotation].shape;
+	shape = piecedata[piece][rotation].shape;
+	int len = 4*4;
 	for (y = 0; y < 4; y++) {
 		for (x = 0; x < 4; x++) {
-			buf[y][x] = *shape++ ? cast(char)(piece % 5 + 1) : 0;
+			buf[y][x] = len-- ? cast(char)(piece % 5 + 1) : 0;
 		}
 	}
 	return 0;
@@ -256,16 +262,17 @@ void draw_piece(int draw) {
 	char c = draw ? cast(char)(current_piece % 5 + 1) : 0;
 	int x = current_x - piecedata[current_piece][current_rotation].hot_x;
 	int y = current_y - piecedata[current_piece][current_rotation].hot_y;
-	char* shape = cast(char*) piecedata[current_piece][current_rotation].shape;
+	auto shape = piecedata[current_piece][current_rotation].shape;
 	int i, j;
 
 	for (j = 0; j < 4; j++) {
+		auto len = shape.length;
 		if (y + j < 0) {
-			shape += 4;
+			len += 4;
 			continue;
 		}
 		for (i = 0; i < 4; i++) {
-			if (*shape++) {
+			if (len--) {
 				(*f)[y + j][x + i] = c;
 			}
 		}
@@ -277,6 +284,7 @@ void draw_piece(int draw) {
 /* Clear any full lines on the field; return the number of lines cleared. */
 
 int clear_lines(int add_specials) {
+	import std.random : uniform;
 	Field* f = &fields[my_playernum - 1];
 	int x, y, count = 0, i, j, k;
 	int[9] new_specials;
@@ -324,7 +332,7 @@ int clear_lines(int add_specials) {
 		for (i = 0; i < count && pos < special_capacity; i++) {
 			for (j = 0; j < 9 && pos < special_capacity; j++) {
 				for (k = 0; k < new_specials[j] && pos < special_capacity; k++) {
-					if (windows_mode && rand() % 2) {
+					if (windows_mode && uniform(0, 2)) {
 						memmove(specials.ptr + 1, specials.ptr, pos);
 						specials[0] = cast(byte) j;
 						pos++;
@@ -351,6 +359,7 @@ int clear_lines(int add_specials) {
  */
 
 void place_specials(int num) {
+	import std.random : uniform;
 	Field* f = &fields[my_playernum - 1];
 	int nblocks = 0, left;
 	int x, y, tries;
@@ -373,8 +382,8 @@ void place_specials(int num) {
 				if ((*f)[y][x] > 5 || (*f)[y][x] == 0) {
 					continue;
 				}
-				if (rand() % nblocks < num) {
-					int which = 0, n = rand() % 100;
+				if (uniform(0, nblocks) < num) {
+					int which = 0, n = uniform(0, 100);
 					while (n >= specialfreq[which]) {
 						n -= specialfreq[which];
 						which++;
@@ -396,10 +405,11 @@ void place_specials(int num) {
  */
 
 void send_field(Field* oldfield) {
+	import std.string : fromStringz;
 	Field* f = &fields[my_playernum - 1];
 	int i, x, y, diff = 0;
 	char[512] buf;
-	char* s;
+	char[] s;
 
 	if (oldfield) {
 		for (y = 0; y < FIELD_HEIGHT; y++) {
@@ -413,18 +423,18 @@ void send_field(Field* oldfield) {
 		diff = FIELD_WIDTH * FIELD_HEIGHT;
 	}
 	if (diff < (FIELD_WIDTH * FIELD_HEIGHT) / 2) {
-		s = buf.ptr + sprintf(buf.ptr, "f %d ", my_playernum);
+		s ~= (buf.ptr + sprintf(buf.ptr, "f %d ", my_playernum))[0];
 		for (i = 0; i < 15; i++) {
 			int seen = 0; /* Have we seen a difference of this block? */
 			for (y = 0; y < FIELD_HEIGHT; y++) {
 				for (x = 0; x < FIELD_WIDTH; x++) {
 					if ((*f)[y][x] == i && (*f)[y][x] != (*oldfield)[y][x]) {
 						if (!seen) {
-							*s++ = cast(char)(i + '!');
+							s ~= cast(char)(i + '!');
 							seen = 1;
 						}
-						*s++ = cast(char)(x + '3');
-						*s++ = cast(char)(y + '3');
+						s ~= cast(char)(x + '3');
+						s ~= cast(char)(y + '3');
 					}
 				}
 			}
@@ -433,19 +443,18 @@ void send_field(Field* oldfield) {
 	/* -4 below is to adjust for "f %d " */
 	if (diff >= (FIELD_WIDTH * FIELD_HEIGHT) / 2 || strlen(buf.ptr) - 4 > FIELD_WIDTH * FIELD_HEIGHT) {
 		static immutable string specials = "acnrsbgqo";
-		s = buf.ptr + sprintf(buf.ptr, "f %d ", my_playernum);
+		s ~= (buf.ptr + sprintf(buf.ptr, "f %d ", my_playernum))[0];
 		for (y = 0; y < FIELD_HEIGHT; y++) {
 			for (x = 0; x < FIELD_WIDTH; x++) {
 				if ((*f)[y][x] > 5) {
-					*s++ = specials[(*f)[y][x] - 6];
+					s ~= specials[(*f)[y][x] - 6];
 				} else {
-					*s++ = cast(char)((*f)[y][x] + '0');
+					s ~= cast(char)((*f)[y][x] + '0');
 				}
 			}
 		}
 	}
-	*s = 0;
-	sputs(buf.ptr, server_sock);
+	server_sock.sockprintf!"%s"(buf.ptr.fromStringz.idup);
 }
 
 /*************************************************************************/
@@ -454,11 +463,12 @@ void send_field(Field* oldfield) {
 /* Generate a new piece and set up the timer. */
 
 void new_piece() {
+	import std.random : uniform;
 	int n;
 	PieceData* pd;
 
 	current_piece = next_piece;
-	n = rand() % 100;
+	n = uniform(0, 100);
 	next_piece = 0;
 	while (n >= piecefreq[next_piece] && next_piece < 6) {
 		n -= piecefreq[next_piece];
@@ -477,11 +487,11 @@ void new_piece() {
 				int x, y;
 				for (y = 0; y < FIELD_HEIGHT; y++) {
 					for (x = 0; x < FIELD_WIDTH; x++) {
-						(*f)[y][x] = cast(char)(rand() % 5 + 1);
+						(*f)[y][x] = cast(char)(uniform(0, 5) + 1);
 					}
 				}
 				send_field(null);
-				sockprintf(server_sock, "playerlost %d", my_playernum);
+				sockprintf!"playerlost %d"(server_sock, my_playernum);
 				playing_game = 0;
 				not_playing_game = 1;
 			}
@@ -491,14 +501,15 @@ void new_piece() {
 	io.draw_status();
 	io.draw_own_field();
 
-	// add delay msecs?
-	gettimeofday(&timeout, null);
-	timeout += level_delay() * 1.msec;
-	timeout.tv_sec += timeout.tv_usec / 1000000;
-	timeout.tv_usec %= 1000000;
+	reset_delay(level_delay * 1.msecs);
 	piece_waiting = 0;
 }
 
+
+void reset_delay(Duration time) {
+	timeout = time;
+	lastDelayReset = Clock.currTime();
+}
 /*************************************************************************/
 
 /* Step the current piece down one space.  If it's already as far as it can
@@ -507,6 +518,7 @@ void new_piece() {
  */
 
 void step_down() {
+	import std.format : format;
 	Field* f = &fields[my_playernum - 1];
 	PieceData* pd = &piecedata[current_piece][current_rotation];
 	int y = current_y - pd.hot_y;
@@ -518,14 +530,10 @@ void step_down() {
 		current_y++;
 		draw_piece(1);
 		io.draw_own_field();
-		gettimeofday(&timeout, null);
-		timeout.tv_usec += level_delay() * 1000;
-		timeout.tv_sec += timeout.tv_usec / 1000000;
-		timeout.tv_usec %= 1000000;
+		reset_delay(level_delay * 1.msecs);
 	} else {
 		int completed, level, nspecials;
 		Field oldfield;
-		char[16] buf;
 
 		memcpy(&oldfield, f, oldfield.sizeof);
 		draw_piece(1);
@@ -538,9 +546,9 @@ void step_down() {
 			if (completed < 4) {
 				completed--;
 			}
-			sockprintf(server_sock, "sb 0 cs%d %d", completed, my_playernum);
-			sprintf(buf.ptr, "cs%d", completed);
-			io.draw_attdef(buf.ptr, my_playernum, 0);
+			sockprintf!"sb 0 cs%d %d"(server_sock, completed, my_playernum);
+			auto str = format!"cs%d"(completed);
+			io.draw_attdef(str, my_playernum, 0);
 		}
 		level = initial_level + (lines / lines_per_level) * level_inc;
 		if (level > 100) {
@@ -548,7 +556,7 @@ void step_down() {
 		}
 		levels[my_playernum] = level;
 		if (completed > 0) {
-			sockprintf(server_sock, "lvl %d %d", my_playernum, level);
+			sockprintf!"lvl %d %d"(server_sock, my_playernum, level);
 			io.draw_status();
 		}
 		nspecials = (lines - last_special) / special_lines;
@@ -558,10 +566,7 @@ void step_down() {
 		io.draw_own_field();
 		send_field(&oldfield);
 		piece_waiting = 1;
-		gettimeofday(&timeout, null);
-		timeout.tv_usec += tetrifast ? 0 : 600000;
-		timeout.tv_sec += timeout.tv_usec / 1000000;
-		timeout.tv_usec %= 1000000;
+		reset_delay(tetrifast ? 0.msecs : 600.msecs);
 	}
 }
 
@@ -569,7 +574,9 @@ void step_down() {
 
 /* Do something for a special block. */
 
-void do_special(const char* type, int from, int to) {
+void do_special(const string type, int from, int to) {
+	import std.conv : parse;
+	import std.random : uniform;
 	Field* f = &fields[my_playernum - 1];
 	Field oldfield;
 	int x, y;
@@ -579,7 +586,7 @@ void do_special(const char* type, int from, int to) {
 	if (!playing_game) {
 		return;
 	}
-	if (to != 0 && to != my_playernum && !(from == my_playernum && *type == 's')) {
+	if (to != 0 && to != my_playernum && !(from == my_playernum && type[0] == 's')) {
 		return;
 	}
 
@@ -587,45 +594,46 @@ void do_special(const char* type, int from, int to) {
 		draw_piece(0);
 	}
 
-	memcpy(&oldfield, f, Field.sizeof);
+	oldfield = *f;
 
-	if (strncmp(type, "cs", 2) == 0) {
-		int nlines = atoi(type + 2);
+	if (type == "cs") {
+		auto arg = type[2..$];
+		int nlines = parse!int(arg);
 
 		/* Don't add lines from a team member */
-		if (!teams[my_playernum - 1] || !teams[from - 1] || strcmp(teams[my_playernum - 1], teams[from - 1]) != 0) {
+		if (!teams[my_playernum - 1] || !teams[from - 1] || teams[my_playernum - 1] != teams[from - 1]) {
 			while (nlines--) {
 				memmove((*f)[0].ptr, (*f)[1].ptr, FIELD_WIDTH * (FIELD_HEIGHT - 1));
 				for (x = 0; x < FIELD_WIDTH; x++) {
-					f[21][x] = cast(char)(1 + rand() % 5);
+					f[21][x] = cast(char)(1 + uniform(0, 5));
 				}
-				f[FIELD_HEIGHT - 1][rand() % FIELD_WIDTH] = 0;
+				f[FIELD_HEIGHT - 1][uniform(0, FIELD_WIDTH)] = 0;
 			}
 		}
 
-	} else if (*type == 'a') {
+	} else if (type == "a") {
 		memmove((*f)[0].ptr, f[1].ptr, FIELD_WIDTH * (FIELD_HEIGHT - 1));
 		for (x = 0; x < FIELD_WIDTH; x++) {
-			f[21][x] = cast(char)(1 + rand() % 5);
+			f[21][x] = cast(char)(1 + uniform(0, 5));
 		}
-		f[FIELD_HEIGHT - 1][rand() % FIELD_WIDTH] = 0;
-		f[FIELD_HEIGHT - 1][rand() % FIELD_WIDTH] = 0;
-		f[FIELD_HEIGHT - 1][rand() % FIELD_WIDTH] = 0;
+		f[FIELD_HEIGHT - 1][uniform(0, FIELD_WIDTH)] = 0;
+		f[FIELD_HEIGHT - 1][uniform(0, FIELD_WIDTH)] = 0;
+		f[FIELD_HEIGHT - 1][uniform(0, FIELD_WIDTH)] = 0;
 
-	} else if (*type == 'b') {
+	} else if (type == "b") {
 		for (y = 0; y < FIELD_HEIGHT; y++) {
 			for (x = 0; x < FIELD_WIDTH; x++) {
 				if ((*f)[y][x] > 5) {
-					(*f)[y][x] = cast(char)(rand() % 5 + 1);
+					(*f)[y][x] = cast(char)(uniform(0, 5) + 1);
 				}
 			}
 		}
 
-	} else if (*type == 'c') {
+	} else if (type == "c") {
 		memmove((*f)[1].ptr, (*f)[0].ptr, FIELD_WIDTH * (FIELD_HEIGHT - 1));
 		memset((*f)[0].ptr, 0, FIELD_WIDTH);
 
-	} else if (*type == 'g') {
+	} else if (type == "g") {
 		for (x = 0; x < FIELD_WIDTH; x++) {
 			y = FIELD_HEIGHT - 1;
 			while (y > 0) {
@@ -650,10 +658,10 @@ void do_special(const char* type, int from, int to) {
 		}
 		clear_lines(0);
 
-	} else if (*type == 'n') {
+	} else if (type == "n") {
 		memset(f.ptr, 0, FIELD_WIDTH * FIELD_HEIGHT);
 
-	} else if (*type == 'o') {
+	} else if (type == "o") {
 		int tries, x2, y2, xnew, ynew;
 
 		for (y = 0; y < FIELD_HEIGHT; y++) {
@@ -675,8 +683,8 @@ void do_special(const char* type, int from, int to) {
 						}
 						tries = 10;
 						while (tries--) {
-							xnew = random() % FIELD_WIDTH;
-							ynew = FIELD_HEIGHT - 1 - random() % 16;
+							xnew = uniform(0, FIELD_WIDTH);
+							ynew = FIELD_HEIGHT - 1 - uniform(0, 16);
 							if (windows_mode || !(*f)[ynew][xnew]) {
 								(*f)[ynew][xnew] = (*f)[y2][x2];
 								break;
@@ -689,9 +697,9 @@ void do_special(const char* type, int from, int to) {
 		}
 		clear_lines(0);
 
-	} else if (*type == 'q') {
+	} else if (type == "q") {
 		for (y = 0; y < FIELD_HEIGHT; y++) {
-			int r = rand() % 3 - 1;
+			int r = uniform(0, 3) - 1;
 			if (r < 0) {
 				int save = (*f)[y][0];
 				memmove((*f)[y].ptr, (*f)[y].ptr + 1, FIELD_WIDTH - 1);
@@ -711,24 +719,23 @@ void do_special(const char* type, int from, int to) {
 			}
 		}
 
-	} else if (*type == 'r') {
+	} else if (type == "r") {
 		int i;
 
 		for (i = 0; i < 10; i++) {
-			x = rand() % FIELD_WIDTH;
-			y = rand() % FIELD_HEIGHT;
+			x = uniform(0, FIELD_WIDTH);
+			y = uniform(0, FIELD_HEIGHT);
 			if ((*f)[y][x] != 0) {
 				(*f)[y][x] = 0;
 				break;
 			}
 		}
 
-	} else if (*type == 's') {
-		Field temp;
+	} else if (type == "s") {
+		import std.algorithm : swap;
 
-		memcpy(temp.ptr, fields[from - 1].ptr, Field.sizeof);
-		memcpy(fields[from - 1].ptr, fields[to - 1].ptr, Field.sizeof);
-		memcpy(fields[to - 1].ptr, temp.ptr, Field.sizeof);
+		swap(fields[to-1], fields[from-1]);
+
 		if (from == my_playernum || to == my_playernum) {
 			memset(fields[my_playernum - 1].ptr, 0, 6 * FIELD_WIDTH);
 		}
@@ -757,26 +764,21 @@ void do_special(const char* type, int from, int to) {
 
 /* Deal with the in-game message input buffer. */
 
-__gshared char[512] gmsg_buffer;
-__gshared int gmsg_pos;
+__gshared string gmsg_buffer;
+__gshared size_t gmsg_pos;
 
 /*************************************************************************/
 
 void gmsg_input(int c) {
-	if (gmsg_pos < gmsg_buffer.sizeof - 1) {
-		memmove(gmsg_buffer.ptr + gmsg_pos + 1, gmsg_buffer.ptr + gmsg_pos, strlen(gmsg_buffer.ptr + gmsg_pos) + 1);
-		gmsg_buffer[gmsg_pos++] = cast(char) c;
-		io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
-	}
+	gmsg_buffer ~= cast(char) c;
+	io.draw_gmsg_input(gmsg_buffer, gmsg_pos);
 }
 
 /*************************************************************************/
 
 void gmsg_delete() {
-	if (gmsg_buffer[gmsg_pos]) {
-		memmove(gmsg_buffer.ptr + gmsg_pos, gmsg_buffer.ptr + gmsg_pos + 1, strlen(gmsg_buffer.ptr + gmsg_pos) - 1 + 1);
-		io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
-	}
+	gmsg_buffer = gmsg_buffer[0..gmsg_pos]~gmsg_buffer[gmsg_pos..$];
+	io.draw_gmsg_input(gmsg_buffer, gmsg_pos);
 }
 
 /*************************************************************************/
@@ -793,7 +795,7 @@ void gmsg_backspace() {
 void gmsg_kill() {
 	gmsg_pos = 0;
 	gmsg_buffer = null;
-	io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
+	io.draw_gmsg_input(gmsg_buffer, gmsg_pos);
 }
 
 /*************************************************************************/
@@ -801,27 +803,28 @@ void gmsg_kill() {
 void gmsg_move(int how) {
 	if (how == -2) {
 		gmsg_pos = 0;
-		io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
+		io.draw_gmsg_input(gmsg_buffer, gmsg_pos);
 	} else if (how == -1 && gmsg_pos > 0) {
 		gmsg_pos--;
-		io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
+		io.draw_gmsg_input(gmsg_buffer, gmsg_pos);
 	} else if (how == 1 && gmsg_buffer[gmsg_pos]) {
 		gmsg_pos++;
-		io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
+		io.draw_gmsg_input(gmsg_buffer, gmsg_pos);
 	} else if (how == 2) {
-		gmsg_pos = cast(int) strlen(gmsg_buffer.ptr);
-		io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
+		gmsg_pos = gmsg_buffer.length;
+		io.draw_gmsg_input(gmsg_buffer, gmsg_pos);
 	}
 }
 
 /*************************************************************************/
 
 void gmsg_enter() {
+	import std.algorithm : startsWith;
 	if (gmsg_buffer.ptr) {
-		if (strncasecmp(gmsg_buffer.ptr, "/me ", 4) == 0) {
-			sockprintf(server_sock, "gmsg * %s %s", players[my_playernum - 1], gmsg_buffer.ptr + 4);
+		if (gmsg_buffer[].startsWith("/me ")) {
+			sockprintf!"gmsg * %s %s"(server_sock, players[my_playernum - 1], gmsg_buffer.ptr + 4);
 		} else {
-			sockprintf(server_sock, "gmsg <%s> %s", players[my_playernum - 1], gmsg_buffer.ptr);
+			sockprintf!"gmsg <%s> %s"(server_sock, players[my_playernum - 1], gmsg_buffer.ptr);
 		}
 		gmsg_pos = 0;
 		gmsg_buffer = null;
@@ -835,14 +838,12 @@ void gmsg_enter() {
 /* Set up for a new game. */
 
 void new_game() {
+	import std.random : uniform;
 	int n;
 
-	gettimeofday(&timeout, null);
-	timeout.tv_usec += 1200000;
-	timeout.tv_sec += timeout.tv_usec / 1000000;
-	timeout.tv_usec %= 1000000;
+	reset_delay(1200.msecs);
 	piece_waiting = 1;
-	n = rand() % 100;
+	n = uniform(0, 100);
 	next_piece = 0;
 	while (n >= piecefreq[next_piece] && next_piece < 6) {
 		n -= piecefreq[next_piece];
@@ -852,15 +853,15 @@ void new_game() {
 
 /*************************************************************************/
 
-/* Return the number of milliseconds until we want to do something. */
+/* Return the amount of time until we want to do something. */
 
-int tetris_timeout() {
-	timeval tv;
-	int t;
-
-	gettimeofday(&tv, null);
-	t = cast(int)((timeout.tv_sec - tv.tv_sec) * 1000 + (timeout.tv_usec - tv.tv_usec) / 1000);
-	return t < 0 ? 0 : t;
+Duration tetris_timeout() {
+	auto time = Clock.currTime();
+	if (lastDelayReset + timeout > time) {
+		return lastDelayReset + timeout - time;
+	} else {
+		return 0.msecs;
+	}
 }
 
 /*************************************************************************/
@@ -1041,8 +1042,6 @@ void tetris_input(int c) {
 		case '4':
 		case '5':
 		case '6':
-			char[2] buf;
-
 			c -= '0';
 			if (!players[c - 1]) {
 				break;
@@ -1050,10 +1049,9 @@ void tetris_input(int c) {
 			if (specials[0] == -1) {
 				break;
 			}
-			sockprintf(server_sock, "sb %d %c %d", c, special_chars[cast(int) specials[0]], my_playernum);
-			buf[0] = special_chars[cast(int) specials[0]];
-			buf[1] = 0;
-			do_special(buf.ptr, my_playernum, c);
+			sockprintf!"sb %d %c %d"(server_sock, c, special_chars[cast(int) specials[0]], my_playernum);
+			string buf = [special_chars[cast(int) specials[0]]];
+			do_special(buf, my_playernum, c);
 			if (special_capacity > 1) {
 				memmove(specials.ptr, specials.ptr + 1, special_capacity - 1);
 			}
@@ -1063,7 +1061,7 @@ void tetris_input(int c) {
 
 		case 't':
 			gmsg_active = 1;
-			io.draw_gmsg_input(gmsg_buffer.ptr, gmsg_pos);
+			io.draw_gmsg_input(gmsg_buffer, gmsg_pos);
 			break;
 		default:
 			assert(0);

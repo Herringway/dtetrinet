@@ -4,53 +4,20 @@ import dtetrinet.tetrinet;
 import dtetrinet.tetris;
 import dtetrinet.sockets;
 
-import core.sys.posix.unistd;
-import core.sys.posix.signal;
-import core.sys.posix.sys.socket;
-import core.sys.posix.netinet.in_;
-import core.sys.posix.sys.select;
-
-import core.stdc.errno;
-import core.stdc.signal;
-import core.stdc.stdio;
-import core.stdc.stdlib;
-import core.stdc.stdarg;
-import core.stdc.string;
-import core.stdc.ctype;
-
-extern (C) int strcasecmp(const char* s1, const char* s2) @nogc nothrow;
-
 __gshared int linuxmode;
 __gshared int ipv6_only;
 
 __gshared int quit;
 __gshared int listen_sock;
 __gshared int listen_sock6;
-__gshared int[6] player_socks = [-1, -1, -1, -1, -1, -1];
+int[6] player_socks = [-1, -1, -1, -1, -1, -1];
+TCPConnection[6] player_connections;
+bool[6] players_connected;
 __gshared char[6][4] player_ips;
 __gshared int[6] player_lost;
 __gshared int[6] player_modes;
 
-/*************************************************************************/
-/*************************************************************************/
-
-/* Convert a 2-byte hex value to an integer. */
-
-int xtoi(const char* buf) {
-	int val;
-
-	if (buf[0] <= '9') {
-		val = (buf[0] - '0') << 4;
-	} else {
-		val = (toupper(buf[0]) - 'A' + 10) << 4;
-	}
-	if (buf[1] <= '9') {
-		val |= buf[1] - '0';
-	} else {
-		val |= toupper(buf[1]) - 'A' + 10;
-	}
-	return val;
-}
+import vibe.core.net;
 
 /*************************************************************************/
 
@@ -59,14 +26,44 @@ int xtoi(const char* buf) {
  */
 
 string winlist_str() nothrow {
-	static char[1024] buf;
-	ulong s;
-	int i;
+	import std.exception : assumeWontThrow;
+	import std.format : format;
+	string output;
 
-	for (i = 0; i < MAXWINLIST && winlist[i].name.ptr != null; i++) {
-		s += snprintf(s, buf.sizeof - (s - buf.ptr), linuxmode ? " %c%s;%d;%d" : " %c%s;%d", winlist[i].team ? 't' : 'p', winlist[i].name.ptr, winlist[i].points, winlist[i].games);
+	for (uint i = 0; i < MAXWINLIST && winlist[i].name.ptr != null; i++) {
+		string str;
+		if (linuxmode) {
+			str = assumeWontThrow(format!" %c%s;%d;%d"(winlist[i].team ? 't' : 'p', winlist[i].name.ptr, winlist[i].points, winlist[i].games));
+		} else {
+			str = assumeWontThrow(format!" %c%s;%d"(winlist[i].team ? 't' : 'p', winlist[i].name.ptr, winlist[i].points));
+		}
+		output ~= str;
+		//s += snprintf(s, buf.sizeof - (s - cast(ulong)buf.ptr), linuxmode ? " %c%s;%d;%d" : " %c%s;%d", winlist[i].team ? 't' : 'p', winlist[i].name.ptr, winlist[i].points, winlist[i].games);
 	}
-	return buf[0 .. s].idup;
+	return output;
+}
+
+struct WinEntry {
+	string player;
+	string team;
+	int points;
+	int games;
+}
+
+struct Settings {
+	bool linuxMode;
+	bool ipv6Only;
+	bool averageLevels;
+	bool classic;
+	int initialLevel;
+	int levelInc;
+	int linesPerLevel;
+	int[] pieceWeights;
+	int specialCapacity;
+	int specialCount;
+	int specialLines;
+	int[] specials;
+	WinEntry[] winlist;
 }
 
 /*************************************************************************/
@@ -74,120 +71,9 @@ string winlist_str() nothrow {
 
 /* Read the configuration file. */
 
-void read_config() @nogc nothrow {
-	char[1024] buf;
-	char* s, t;
-	FILE* f;
-	int i;
-
-	s = getenv("HOME");
-	if (!s) {
-		s = cast(char*) "/etc".ptr;
-	}
-	snprintf(buf.ptr, buf.sizeof, "%s/.tetrinet", s);
-	f = fopen(buf.ptr, "r");
-	if (!f) {
-		return;
-	}
-	while (fgets(buf.ptr, buf.sizeof, f)) {
-		s = strtok(buf.ptr, " ");
-		if (!s) {
-			continue;
-		} else if (strcmp(s, "linuxmode") == 0) {
-			s = strtok(null, " ");
-			if (s) {
-				linuxmode = atoi(s);
-			}
-		} else if (strcmp(s, "ipv6_only") == 0) {
-			s = strtok(null, " ");
-			if (s) {
-				ipv6_only = atoi(s);
-			}
-		} else if (strcmp(s, "averagelevels") == 0) {
-			s = strtok(null, " ");
-			if (s) {
-				level_average = atoi(s);
-			}
-		} else if (strcmp(s, "classic") == 0) {
-			s = strtok(null, " ");
-			if (s) {
-				old_mode = atoi(s);
-			}
-		} else if (strcmp(s, "initiallevel") == 0) {
-			s = strtok(null, " ");
-			if (s) {
-				initial_level = atoi(s);
-			}
-		} else if (strcmp(s, "levelinc") == 0) {
-			s = strtok(null, " ");
-			if (s) {
-				level_inc = atoi(s);
-			}
-		} else if (strcmp(s, "linesperlevel") == 0) {
-			s = strtok(null, " ");
-			if (s) {
-				lines_per_level = atoi(s);
-			}
-		} else if (strcmp(s, "pieces") == 0) {
-			i = 0;
-			s = strtok(null, " ");
-			while (i < 7 && s) {
-				piecefreq[i++] = atoi(s);
-				s = strtok(null, " ");
-			}
-		} else if (strcmp(s, "specialcapacity") == 0) {
-			s = strtok(null, " ");
-			if (s) {
-				special_capacity = atoi(s);
-			}
-		} else if (strcmp(s, "specialcount") == 0) {
-			s = strtok(null, " ");
-			if (s) {
-				special_count = atoi(s);
-			}
-		} else if (strcmp(s, "speciallines") == 0) {
-			s = strtok(null, " ");
-			if (s) {
-				special_lines = atoi(s);
-			}
-		} else if (strcmp(s, "specials") == 0) {
-			i = 0;
-			s = strtok(null, " ");
-			while (i < 9 && s) {
-				specialfreq[i++] = atoi(s);
-				s = strtok(null, " ");
-			}
-		} else if (strcmp(s, "winlist") == 0) {
-			i = 0;
-			s = strtok(null, " ");
-			while (i < MAXWINLIST && s) {
-				t = strchr(s, ';');
-				if (!t)
-					break;
-				*t++ = 0;
-				strncpy(winlist[i].name.ptr, s, winlist[i].name.sizeof - 1);
-				winlist[i].name[winlist[i].name.sizeof - 1] = 0;
-				s = t;
-				t = strchr(s, ';');
-				if (!t) {
-					winlist[i].name = winlist[i].name.init;
-					break;
-				}
-				winlist[i].team = atoi(s);
-				s = t + 1;
-				t = strchr(s, ';');
-				if (!t) {
-					winlist[i].name = winlist[i].name.init;
-					break;
-				}
-				winlist[i].points = atoi(s);
-				winlist[i].games = atoi(t + 1);
-				i++;
-				s = strtok(null, " ");
-			}
-		}
-	}
-	fclose(f);
+auto read_config() {
+	import easysettings : loadSettings;
+	return loadSettings!Settings("tetrinet");
 }
 
 /*************************************************************************/
@@ -196,55 +82,9 @@ void read_config() @nogc nothrow {
 
 /* Re-write the configuration file. */
 
-void write_config() @nogc nothrow {
-	char[1024] buf;
-	char* s;
-	FILE* f;
-	int i;
-
-	s = getenv("HOME");
-	if (!s) {
-		s = cast(char*) "/etc".ptr;
-	}
-	snprintf(buf.ptr, buf.sizeof, "%s/.tetrinet", s);
-	f = fopen(buf.ptr, "w");
-	if (!f) {
-		return;
-	}
-
-	fprintf(f, "winlist");
-	for (i = 0; i < MAXSAVEWINLIST && winlist[i].name != winlist[i].name.init; i++) {
-		fprintf(f, " %s;%d;%d;%d", winlist[i].name.ptr, winlist[i].team, winlist[i].points, winlist[i].games);
-	}
-	fputc('\n', f);
-
-	fprintf(f, "classic %d\n", old_mode);
-
-	fprintf(f, "initiallevel %d\n", initial_level);
-	fprintf(f, "linesperlevel %d\n", lines_per_level);
-	fprintf(f, "levelinc %d\n", level_inc);
-	fprintf(f, "averagelevels %d\n", level_average);
-
-	fprintf(f, "speciallines %d\n", special_lines);
-	fprintf(f, "specialcount %d\n", special_count);
-	fprintf(f, "specialcapacity %d\n", special_capacity);
-
-	fprintf(f, "pieces");
-	for (i = 0; i < 7; i++) {
-		fprintf(f, " %d", piecefreq[i]);
-	}
-	fputc('\n', f);
-
-	fprintf(f, "specials");
-	for (i = 0; i < 9; i++) {
-		fprintf(f, " %d", specialfreq[i]);
-	}
-	fputc('\n', f);
-
-	fprintf(f, "linuxmode %d\n", linuxmode);
-	fprintf(f, "ipv6_only %d\n", ipv6_only);
-
-	fclose(f);
+void write_config() {
+	import easysettings : saveSettings;
+	saveSettings(Settings(), "tetrinet");
 }
 
 /*************************************************************************/
@@ -252,13 +92,13 @@ void write_config() @nogc nothrow {
 
 /* Send a message to a single player. */
 
-void send_to(T...)(int player, const char* fmt, T args) nothrow {
+void send_to(string fmt, T...)(long player, T args) {
 	import std.exception : assumeWontThrow;
 	import std.format : format;
 	import std.conv : to;
 
-	if (player_socks[player - 1] >= 0) {
-		sockprintf(player_socks[player - 1], "%s", assumeWontThrow(format(fmt.to!string, args)).ptr);
+	if (players_connected[player]) {
+		sockprintf!fmt(player_connections[player], args);
 	}
 }
 
@@ -266,7 +106,7 @@ void send_to(T...)(int player, const char* fmt, T args) nothrow {
 
 /* Send a message to all players. */
 
-void send_to_all(string fmt, T...)(T args) nothrow {
+void send_to_all(string fmt, T...)(T args) {
 	import std.exception : assumeWontThrow;
 	import std.format : sformat;
 	import std.conv : to;
@@ -274,8 +114,8 @@ void send_to_all(string fmt, T...)(T args) nothrow {
 	int i;
 
 	for (i = 0; i < 6; i++) {
-		if (player_socks[i] >= 0) {
-			sockprintf(player_socks[i], fmt, args);
+		if (players_connected[i]) {
+			sockprintf!fmt(player_connections[i], args);
 		}
 	}
 }
@@ -284,7 +124,7 @@ void send_to_all(string fmt, T...)(T args) nothrow {
 
 /* Send a message to all players but the given one. */
 
-void send_to_all_but(T...)(int player, const char* fmt, T args) nothrow {
+void send_to_all_but(string fmt, T...)(long player, T args) {
 	import std.exception : assumeWontThrow;
 	import std.format : format;
 	import std.conv : to;
@@ -292,8 +132,8 @@ void send_to_all_but(T...)(int player, const char* fmt, T args) nothrow {
 	int i;
 
 	for (i = 0; i < 6; i++) {
-		if (i + 1 != player && player_socks[i] >= 0) {
-			sockprintf(player_socks[i], "%s", assumeWontThrow(format(fmt.to!string, args)).ptr);
+		if (i != player && players_connected[i]) {
+			sockprintf!fmt(player_connections[i], args);
 		}
 	}
 }
@@ -304,17 +144,17 @@ void send_to_all_but(T...)(int player, const char* fmt, T args) nothrow {
  * player.
  */
 
-void send_to_all_but_team(int player, const char* format, ...) nothrow {
-	va_list args;
-	char[1024] buf;
-	int i;
-	char* team = teams[player - 1];
+void send_to_all_but_team(string fmt, T...)(long player, T args) {
+	import std.exception : assumeWontThrow;
+	import std.format : format;
+	import std.conv : to;
 
-	va_start(args, format);
-	vsnprintf(buf.ptr, buf.sizeof, format, args);
+	int i;
+	auto team = teams[player];
+
 	for (i = 0; i < 6; i++) {
-		if (i + 1 != player && player_socks[i] >= 0 && (!team || !teams[i] || strcmp(teams[i], team) != 0)) {
-			sockprintf(player_socks[i], "%s", buf.ptr);
+		if (i + 1 != player && players_connected[i] && (!team || !teams[i] || (teams[i] != team))) {
+			sockprintf!fmt(player_connections[i], args);
 		}
 	}
 }
@@ -329,14 +169,14 @@ void send_to_all_but_team(int player, const char* format, ...) nothrow {
 void add_points(int player, int points) {
 	int i;
 
-	if (!players[player - 1]) {
+	if (!players[player]) {
 		return;
 	}
 	for (i = 0; i < MAXWINLIST && winlist[i].name != winlist[i].name.init; i++) {
-		if (!winlist[i].team && !teams[player - 1] && strcmp(winlist[i].name.ptr, players[player - 1]) == 0) {
+		if (!winlist[i].team && !teams[player] && (winlist[i].name == players[player])) {
 			break;
 		}
-		if (winlist[i].team && teams[player - 1] && strcmp(winlist[i].name.ptr, teams[player - 1]) == 0) {
+		if (winlist[i].team && teams[player] && (winlist[i].name == teams[player])) {
 			break;
 		}
 	}
@@ -348,13 +188,11 @@ void add_points(int player, int points) {
 	if (i == MAXWINLIST)
 		return;
 	if (winlist[i].name == winlist[i].name.init) {
-		if (teams[player - 1]) {
-			strncpy(winlist[i].name.ptr, teams[player - 1], winlist[i].name.sizeof - 1);
-			winlist[i].name[winlist[i].name.sizeof - 1] = 0;
+		if (teams[player]) {
+			winlist[i].name = teams[player];
 			winlist[i].team = 1;
 		} else {
-			strncpy(winlist[i].name.ptr, players[player - 1], winlist[i].name.sizeof - 1);
-			winlist[i].name[winlist[i].name.sizeof - 1] = 0;
+			winlist[i].name = players[player];
 			winlist[i].team = 0;
 		}
 	}
@@ -368,13 +206,13 @@ void add_points(int player, int points) {
 void add_game(int player) {
 	int i;
 
-	if (!players[player - 1])
+	if (!players[player])
 		return;
 	for (i = 0; i < MAXWINLIST && winlist[i].name != winlist[i].name.init; i++) {
-		if (!winlist[i].team && !teams[player - 1] && strcmp(winlist[i].name.ptr, players[player - 1]) == 0) {
+		if (!winlist[i].team && !teams[player] && (winlist[i].name == players[player])) {
 			break;
 		}
-		if (winlist[i].team && teams[player - 1] && strcmp(winlist[i].name.ptr, teams[player - 1]) == 0) {
+		if (winlist[i].team && teams[player] && (winlist[i].name == teams[player])) {
 			break;
 		}
 	}
@@ -389,6 +227,7 @@ void add_game(int player) {
 /* Sort the winlist. */
 
 void sort_winlist() {
+	import std.algorithm : swap;
 	int i, j, best, bestindex;
 
 	for (i = 0; i < MAXWINLIST && winlist[i].name != winlist[i].name.init; i++) {
@@ -401,10 +240,7 @@ void sort_winlist() {
 			}
 		}
 		if (bestindex != i) {
-			WinInfo tmp;
-			memcpy(&tmp, &winlist[i], WinInfo.sizeof);
-			memcpy(&winlist[i], &winlist[bestindex], WinInfo.sizeof);
-			memcpy(&winlist[bestindex], &tmp, WinInfo.sizeof);
+			swap(winlist[i], winlist[bestindex]);
 		}
 	}
 }
@@ -413,24 +249,25 @@ void sort_winlist() {
 
 /* Take care of a player losing (which may end the game). */
 
-void player_loses(int player) {
+void player_loses(long player) {
+	import std.uni : icmp;
 	int i, j, order, end = 1, winner = -1, second = -1, third = -1;
 
-	if (player < 1 || player > 6 || player_socks[player - 1] < 0) {
+	if (player < 1 || player > 6 || player_socks[player] < 0) {
 		return;
 	}
 	order = 0;
 	for (i = 1; i <= 6; i++) {
-		if (player_lost[i - 1] > order) {
-			order = player_lost[i - 1];
+		if (player_lost[i] > order) {
+			order = player_lost[i];
 		}
 	}
-	player_lost[player - 1] = order + 1;
-	for (i = 1; i <= 6; i++) {
-		if (player_socks[i - 1] >= 0 && !player_lost[i - 1]) {
+	player_lost[player] = order + 1;
+	for (i = 0; i < 6; i++) {
+		if (player_socks[i] >= 0 && !player_lost[i]) {
 			if (winner < 0) {
 				winner = i;
-			} else if (!teams[winner - 1] || !teams[i - 1] || strcasecmp(teams[winner - 1], teams[i - 1]) != 0) {
+			} else if (!teams[winner] || !teams[i] || icmp(teams[winner], teams[i]) != 0) {
 				end = 0;
 				break;
 			}
@@ -445,29 +282,29 @@ void player_loses(int player) {
 			add_points(winner, 3);
 			order = 0;
 			for (i = 1; i <= 6; i++) {
-				if (player_lost[i - 1] > order && (!teams[winner - 1] || !teams[i - 1] || strcasecmp(teams[winner - 1], teams[i - 1]) != 0)) {
-					order = player_lost[i - 1];
+				if (player_lost[i] > order && (!teams[winner] || !teams[i] || icmp(teams[winner], teams[i]) != 0)) {
+					order = player_lost[i];
 					second = i;
 				}
 			}
 			if (order) {
 				add_points(second, 2);
-				player_lost[second - 1] = 0;
+				player_lost[second] = 0;
 			}
 			order = 0;
 			for (i = 1; i <= 6; i++) {
-				if (player_lost[i - 1] > order && (!teams[winner - 1] || !teams[i - 1] || strcasecmp(teams[winner - 1], teams[i - 1]) != 0) && (!teams[second - 1] || !teams[i - 1]
-						|| strcasecmp(teams[second - 1], teams[i - 1]) != 0)) {
-					order = player_lost[i - 1];
+				if (player_lost[i] > order && (!teams[winner] || !teams[i] || icmp(teams[winner], teams[i]) != 0) && (!teams[second] || !teams[i]
+						|| icmp(teams[second], teams[i]) != 0)) {
+					order = player_lost[i];
 					third = i;
 				}
 			}
 			if (order)
 				add_points(third, 1);
-			for (i = 1; i <= 6; i++) {
-				if (teams[i - 1]) {
-					for (j = 1; j < i; j++) {
-						if (teams[j - 1] && strcasecmp(teams[i - 1], teams[j - 1]) == 0) {
+			for (i = 0; i < 6; i++) {
+				if (teams[i]) {
+					for (j = 0; j < i; j++) {
+						if (teams[j] && icmp(teams[i], teams[j]) == 0) {
 							break;
 						}
 					}
@@ -475,7 +312,7 @@ void player_loses(int player) {
 						continue;
 					}
 				}
-				if (player_socks[i - 1] >= 0) {
+				if (player_socks[i] >= 0) {
 					add_game(i);
 				}
 			}
@@ -496,104 +333,107 @@ void player_loses(int player) {
  * effect.  Return 0 if the command is unknown (or bad syntax), else 1.
  */
 
-int server_parse(int player, char* buf) {
-	char* cmd, s, t;
+int server_parse(long player, string buf) {
+	import std.algorithm.iteration : joiner, splitter;
+	import std.algorithm.searching : findSplit;
+	import std.array : array;
+	import std.conv : parse;
+	import std.string : fromStringz;
+	import std.uni : icmp;
+	import std.utf : byCodeUnit;
+	string s, t;
 	int i, tetrifast = 0;
-
-	cmd = strtok(buf, " ");
-
-	if (!cmd) {
-		return 1;
-	} else if (strcmp(cmd, "tetrisstart") == 0) {
-	newplayer:
-		s = strtok(null, " ");
-		t = strtok(null, " ");
-		if (!t) {
-			return 0;
+	auto splitOne = buf.findSplit(" ");
+	string cmd = splitOne[0];
+	bool parseJoin() {
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
+		if (!s) {
+			return false;
 		}
-		for (i = 1; i <= 6; i++) {
-			if (players[i - 1] && strcasecmp(s, players[i - 1]) == 0) {
-				send_to(player, "noconnecting Nickname already exists on server!");
-				return 0;
+		t = splitTwo[2];
+		foreach (playing; players) {
+			if (playing && icmp(s, playing) == 0) {
+				send_to!"noconnecting Nickname already exists on server!"(player);
+				return false;
 			}
 		}
-		players[player - 1] = strdup(s);
-		if (teams[player - 1]) {
-			free(teams[player - 1]);
-		}
-		teams[player - 1] = null;
-		player_modes[player - 1] = tetrifast;
-		send_to(player, "%s %d".ptr, tetrifast ? ")#)(!@(*3".ptr : "playernum".ptr, player);
-		send_to(player, "winlist %s", winlist_str());
-		for (i = 1; i <= 6; i++) {
-			if (i != player && players[i - 1]) {
-				send_to(player, "playerjoin %d %s", i, players[i - 1]);
-				send_to(player, "team %d %s", i, teams[i - 1] ? teams[i - 1] : "");
+		players[player] = s;
+		teams[player] = null;
+		player_modes[player] = tetrifast;
+		send_to!"%s %d"(player, tetrifast ? ")#)(!@(*3".ptr : "playernum".ptr, player);
+		send_to!"winlist %s",(player, winlist_str());
+		foreach (i, playing; players) {
+			if (i != player && playing) {
+				send_to!"playerjoin %d %s"(player, i, playing);
+				send_to!"team %d %s"(player, i, teams[i] ? teams[i] : "");
 			}
 		}
 		if (playing_game) {
-			send_to(player, "ingame");
-			player_lost[player - 1] = 1;
+			send_to!"ingame"(player);
+			player_lost[player] = 1;
 		}
-		send_to_all_but(player, "playerjoin %d %s", player, players[player - 1]);
-
-	} else if (strcmp(cmd, "tetrifaster") == 0) {
+		send_to_all_but!"playerjoin %d %s"(player, player, players[player]);
+		return true;
+	}
+	if (cmd == "") {
+		return 1;
+	} else if (cmd == "tetrisstart") {
+		if (!parseJoin()) {
+			return 0;
+		}
+	} else if (cmd == "tetrifaster") {
 		tetrifast = 1;
-		goto newplayer;
-
-	} else if (strcmp(cmd, "team") == 0) {
-		s = strtok(null, " ");
-		t = strtok(null, "");
-		if (!s || atoi(s) != player) {
+		if (!parseJoin()) {
 			return 0;
 		}
-		if (teams[player]) {
-			free(teams[player]);
+	} else if (cmd == "team") {
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
+		if (!splitOne || parse!int(s) != player) {
+			return 0;
 		}
-		if (t) {
-			teams[player] = strdup(t);
+		if (splitTwo) {
+			teams[player] = splitTwo[2];
 		} else {
-			teams[player] = null;
+			teams[player] = "";
 		}
-		send_to_all_but(player, "team %d %s", player, t ? t : "");
+		send_to_all_but!"team %d %s"(player, player, t ? t : "");
 
-	} else if (strcmp(cmd, "pline") == 0) {
-		s = strtok(null, " ");
-		t = strtok(null, "");
-		if (!s || atoi(s) != player) {
+	} else if (cmd == "pline") {
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
+		if (!s || parse!int(s) != player) {
 			return 0;
 		}
-		if (!t) {
-			t = cast(char*) "".ptr;
-		}
-		send_to_all_but(player, "pline %d %s", player, t);
+		t = splitTwo[2];
+		send_to_all_but!"pline %d %s"(player, player, t);
 
-	} else if (strcmp(cmd, "plineact") == 0) {
-		s = strtok(null, " ");
-		t = strtok(null, "");
-		if (!s || atoi(s) != player) {
+	} else if (cmd == "plineact") {
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
+		if (!s || parse!int(s) != player) {
 			return 0;
 		}
-		if (!t) {
-			t = cast(char*) "".ptr;
-		}
-		send_to_all_but(player, "plineact %d %s", player, t);
+		t = splitTwo[2];
+		send_to_all_but!"plineact %d %s"(player, player, t);
 
-	} else if (strcmp(cmd, "startgame") == 0) {
+	} else if (cmd == "startgame") {
 		int total;
 		char[101] piecebuf, specialbuf;
 
 		for (i = 1; i < player; i++) {
-			if (player_socks[i - 1] >= 0) {
+			if (player_socks[i] >= 0) {
 				return 1;
 			}
 		}
-		s = strtok(null, " ");
-		t = strtok(null, " ");
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
+		t = splitTwo[2];
 		if (!s) {
 			return 1;
 		}
-		i = atoi(s);
+		i = parse!int(s);
 		if ((i && playing_game) || (!i && !playing_game)) {
 			return 1;
 		}
@@ -605,7 +445,8 @@ int server_parse(int player, char* buf) {
 		total = 0;
 		for (i = 0; i < 7; i++) {
 			if (piecefreq[i]) {
-				memset(piecebuf.ptr + total, '1' + i, piecefreq[i]);
+				piecebuf[total..piecefreq[i]] = cast(char)('1'+i);
+				//memset(piecebuf.ptr + total, '1' + i, piecefreq[i]);
 			}
 			total += piecefreq[i];
 		}
@@ -617,7 +458,8 @@ int server_parse(int player, char* buf) {
 		total = 0;
 		for (i = 0; i < 9; i++) {
 			if (specialfreq[i]) {
-				memset(specialbuf.ptr + total, '1' + i, specialfreq[i]);
+				specialbuf[total..specialfreq[i]] = cast(char)('1'+i);
+				//memset(specialbuf.ptr + total, '1' + i, specialfreq[i]);
 			}
 			total += specialfreq[i];
 		}
@@ -629,24 +471,26 @@ int server_parse(int player, char* buf) {
 		playing_game = 1;
 		game_paused = 0;
 		for (i = 1; i <= 6; i++) {
-			if (player_socks[i - 1] < 0) {
+			if (player_socks[i] < 0) {
 				continue;
 			}
 			/* XXX First parameter is stack height */
-			send_to(i, "%s %d %d %d %d %d %d %d %s %s %d %d", player_modes[i - 1] ? "*******".ptr : "newgame".ptr, 0, initial_level, lines_per_level, level_inc, special_lines, special_count,
+			send_to!"%s %d %d %d %d %d %d %d %s %s %d %d"(i, player_modes[i] ? "*******".ptr : "newgame".ptr, 0, initial_level, lines_per_level, level_inc, special_lines, special_count,
 				special_capacity, piecebuf.ptr, specialbuf.ptr, level_average, old_mode);
 		}
-		memset(player_lost.ptr, 0, player_lost.sizeof);
+		player_lost[] = 0;
+		//memset(player_lost.ptr, 0, player_lost.sizeof);
 
-	} else if (strcmp(cmd, "pause") == 0) {
+	} else if (cmd == "pause") {
 		if (!playing_game) {
 			return 1;
 		}
-		s = strtok(null, " ");
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
 		if (!s) {
 			return 1;
 		}
-		i = atoi(s);
+		i = parse!int(s);
 		if (i) {
 			i = 1; /* to make sure it's not anything else */
 		}
@@ -656,71 +500,76 @@ int server_parse(int player, char* buf) {
 		game_paused = i;
 		send_to_all!"pause %d"(i);
 
-	} else if (strcmp(cmd, "playerlost") == 0) {
-		s = strtok(null, " ");
-		if (!s || atoi(s) != player) {
+	} else if (cmd == "playerlost") {
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
+		if (!s || parse!int(s) != player) {
 			return 1;
 		}
 		player_loses(player);
 
-	} else if (strcmp(cmd, "f") == 0) { /* field */
-		s = strtok(null, " ");
-		if (!s || atoi(s) != player) {
+	} else if (cmd == "f") { /* field */
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
+		if (!s || parse!int(s) != player) {
 			return 1;
 		}
-		s = strtok(null, "");
-		if (!s) {
-			s = cast(char*) "".ptr;
-		}
-		send_to_all_but(player, "f %d %s", player, s);
+		auto splitThree = splitTwo[2].findSplit(" ");
+		s = splitThree[0];
+		send_to_all_but!"f %d %s"(player, player, s);
 
-	} else if (strcmp(cmd, "lvl") == 0) {
-		s = strtok(null, " ");
-		if (!s || atoi(s) != player) {
+	} else if (cmd == "lvl") {
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
+		if (!s || parse!int(s) != player) {
 			return 1;
 		}
-		s = strtok(null, " ");
+		auto splitThree = splitTwo[2].findSplit(" ");
+		s = splitThree[0];
 		if (!s) {
 			return 1;
 		}
-		levels[player] = atoi(s);
-		send_to_all_but(player, "lvl %d %d", player, levels[player]);
+		levels[player] = parse!int(s);
+		send_to_all_but!"lvl %d %d"(player, player, levels[player]);
 
-	} else if (strcmp(cmd, "sb") == 0) {
+	} else if (cmd == "sb") {
 		int from, to;
-		char* type;
+		string type;
 
-		s = strtok(null, " ");
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
 		if (!s) {
 			return 1;
 		}
-		to = atoi(s);
-		type = strtok(null, " ");
+		to = parse!int(s);
+		auto splitThree = splitTwo[2].findSplit(" ");
+		type = splitThree[0];
 		if (!type) {
 			return 1;
 		}
-		s = strtok(null, " ");
+		auto splitFour = splitThree[2].findSplit(" ");
+		s = splitFour[0];
 		if (!s) {
 			return 1;
 		}
-		from = atoi(s);
+		from = parse!int(s);
 		if (from != player) {
 			return 1;
 		}
-		if (to < 0 || to > 6 || player_socks[to - 1] < 0 || player_lost[to - 1]) {
+		if (to < 0 || to > 6 || player_socks[to] < 0 || player_lost[to]) {
 			return 1;
 		}
 		if (to == 0) {
-			send_to_all_but_team(player, "sb %d %s %d", to, type, from);
+			send_to_all_but_team!"sb %d %s %d"(player, to, type, from);
 		} else {
-			send_to_all_but(player, "sb %d %s %d", to, type, from);
+			send_to_all_but!"sb %d %s %d"(player, to, type, from);
 		}
 
-	} else if (strcmp(cmd, "gmsg") == 0) {
-		s = strtok(null, "");
-		if (!s) {
+	} else if (cmd == "gmsg") {
+		if (!splitOne) {
 			return 1;
 		}
+		s = splitOne[2];
 		send_to_all!"gmsg %s"(s);
 
 	} else { /* unrecognized command */
@@ -731,282 +580,51 @@ int server_parse(int player, char* buf) {
 	return 1;
 }
 
-/*************************************************************************/
-/*************************************************************************/
-
-void check_sockets() {
-	fd_set fds;
-	int i, fd, maxfd;
-
-	FD_ZERO(&fds);
-	if (listen_sock >= 0) {
-		FD_SET(listen_sock, &fds);
-	}
-	maxfd = listen_sock;
-	version (HAVE_IPV6) {
-		if (listen_sock6 >= 0) {
-			FD_SET(listen_sock6, &fds);
-		}
-		if (listen_sock6 > maxfd) {
-			maxfd = listen_sock6;
-		}
-	}
-	for (i = 0; i < 6; i++) {
-		if (player_socks[i] != -1) {
-			if (player_socks[i] < 0) {
-				fd = (~player_socks[i]) - 1;
-			} else {
-				fd = player_socks[i];
-			}
-			FD_SET(fd, &fds);
-			if (fd > maxfd) {
-				maxfd = fd;
-			}
-		}
-	}
-
-	if (select(maxfd + 1, &fds, null, null, null) <= 0)
-		return;
-
-	if (listen_sock >= 0 && FD_ISSET(listen_sock, &fds)) {
-		sockaddr_in sin;
-		uint len = sin.sizeof;
-		fd = accept(listen_sock, cast(sockaddr*)&sin, &len);
-		if (fd >= 0) {
-			for (i = 0; i < 6 && player_socks[i] != -1; i++) {
-
-			}
-			if (i == 6) {
-				sockprintf(fd, "noconnecting Too many players on server!");
-				close(fd);
-			} else {
-				player_socks[i] = ~(fd + 1);
-				memcpy(player_ips[i].ptr, &sin.sin_addr, 4);
-			}
-		}
-	}
-
-	version (HAVE_IPV6) {
-		if (listen_sock6 >= 0 && FD_ISSET(listen_sock6, &fds)) {
-			sockaddr_in6 sin6;
-			uint len = sin6.sizeof;
-			fd = accept(listen_sock6, cast(sockaddr*)&sin6, &len);
-			if (fd >= 0) {
-				for (i = 0; i < 6 && player_socks[i] != -1; i++) {
-
-				}
-				if (i == 6) {
-					sockprintf(fd, "noconnecting Too many players on server!");
-					close(fd);
-				} else {
-					player_socks[i] = ~(fd + 1);
-					memcpy(player_ips[i].ptr, cast(char*)(&sin6.sin6_addr) + 12, 4);
-				}
-			}
-		}
-	}
-
-	for (i = 0; i < 6; i++) {
-		char[1024] buf;
-
-		if (player_socks[i] == -1) {
-			continue;
-		}
-		if (player_socks[i] < 0) {
-			fd = (~player_socks[i]) - 1;
-		} else {
-			fd = player_socks[i];
-		}
-		if (!FD_ISSET(fd, &fds)) {
-			continue;
-		}
-		sgets(buf.ptr, buf.sizeof, fd);
-		if (player_socks[i] < 0) {
-			/* Messy decoding stuff */
-			char[16] iphashbuf;
-			char[1024] newbuf;
-			ubyte* ip;
-			int j, c, d;
-
-			if (strlen(buf.ptr) < 2 * 13) { /* "tetrisstart " + initial byte */
-				close(fd);
-				player_socks[i] = -1;
-				continue;
-			}
-			ip = cast(ubyte*) player_ips[i].ptr;
-			sprintf(iphashbuf.ptr, "%d", ip[0] * 54 + ip[1] * 41 + ip[2] * 29 + ip[3] * 17);
-			c = xtoi(buf.ptr);
-			for (j = 2; buf[j] && buf[j + 1]; j += 2) {
-				int temp;
-				temp = d = xtoi(buf.ptr + j);
-				d ^= iphashbuf[((j / 2) - 1) % strlen(iphashbuf.ptr)];
-				d += 255 - c;
-				d %= 255;
-				newbuf[j / 2 - 1] = cast(char) d;
-				c = temp;
-			}
-			newbuf[j / 2 - 1] = 0;
-			if (strncmp(newbuf.ptr, "tetrisstart ", 12) != 0) {
-				close(fd);
-				player_socks[i] = -1;
-				continue;
-			}
-			/* Buffers should be the same size, but let's be paranoid */
-			strncpy(buf.ptr, newbuf.ptr, buf.sizeof);
-			buf[buf.sizeof - 1] = 0;
-			player_socks[i] = fd; /* Has now registered */
-		} /* if client not registered */
-		if (!server_parse(i + 1, buf.ptr)) {
-			close(fd);
-			player_socks[i] = -1;
-			if (players[i]) {
-				send_to_all!"playerleave %d"(i + 1);
-				if (playing_game) {
-					player_loses(i + 1);
-				}
-				free(players[i]);
-				players[i] = null;
-				if (teams[i]) {
-					free(teams[i]);
-					teams[i] = null;
-				}
-			}
-		}
-	} /* for each player socket */
-}
-
-/* Returns 0 on success, desired program exit code on failure */
-
-int s_init() @nogc {
-	sockaddr_in sin;
-	version (HAVE_IPV6) {
-		sockaddr_in6 sin6;
-	}
-	int i;
-
-	/* Set up some sensible defaults */
-	//winlist[0].name = null;
-	old_mode = 1;
-	initial_level = 1;
-	lines_per_level = 2;
-	level_inc = 1;
-	level_average = 1;
-	special_lines = 1;
-	special_count = 1;
-	special_capacity = 18;
-	piecefreq[0] = 14;
-	piecefreq[1] = 14;
-	piecefreq[2] = 15;
-	piecefreq[3] = 14;
-	piecefreq[4] = 14;
-	piecefreq[5] = 14;
-	piecefreq[6] = 15;
-	specialfreq[0] = 18;
-	specialfreq[1] = 18;
-	specialfreq[2] = 3;
-	specialfreq[3] = 12;
-	specialfreq[4] = 0;
-	specialfreq[5] = 16;
-	specialfreq[6] = 3;
-	specialfreq[7] = 12;
-	specialfreq[8] = 18;
+int serverMain() {
+	import vibe.core.net;
+	import vibe.core.stream;
+	import vibe.core.core;
+	import vibe.stream.operations;
+	import std.experimental.logger : info, trace, tracef;
+	import std.algorithm : countUntil;
 
 	/* (Try to) read the config file */
 	read_config();
 
-	/* Catch some signals */
-	signal(SIGHUP, &sigcatcher);
-	signal(SIGINT, &sigcatcher);
-	signal(SIGTERM, &sigcatcher);
-
-	/* Set up a listen socket */
-	if (!ipv6_only) {
-		listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	}
-	if (listen_sock >= 0) {
-		i = 1;
-		if (setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &i, i.sizeof) == 0) {
-			memset(&sin, 0, sin.sizeof);
-			sin.sin_family = AF_INET;
-			sin.sin_port = htons(31457);
-			if (bind(listen_sock, cast(sockaddr*)&sin, sin.sizeof) == 0) {
-				if (listen(listen_sock, 5) == 0) {
-					goto ipv4_success;
+	runTask({
+		auto listener = listenTCP(31457, (TCPConnection conn) {
+			auto playerCount = players_connected[].countUntil(false);
+			tracef("Player %d attempting connection", playerCount);
+			if (playerCount == -1) {
+				conn.write("noconnecting Too many players on server!");
+				return;
+			} else {
+				tracef("Player %d connected", playerCount);
+				players_connected[playerCount] = true;
+				player_connections[playerCount] = conn;
+			}
+			scope(exit) {
+				tracef("Player %d disconnected", playerCount);
+				players_connected[playerCount] = false;
+				player_connections[playerCount] = null;
+			}
+			while (true) {
+				auto str = cast(string)conn.readLine();
+				tracef("Player %s: %s", playerCount, str);
+				try {
+					server_parse(playerCount, str);
+				} catch (Exception e) {
+					info("Error: ", e);
 				}
 			}
-		}
-		i = errno;
-		close(listen_sock);
-		errno = i;
-		listen_sock = -1;
-	}
-ipv4_success:
+		});
+		write_config();
+	});
 
-	version (HAVE_IPV6) {
-		/* Set up an IPv6 listen socket if possible */
-		listen_sock6 = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-		if (listen_sock6 >= 0) {
-			i = 1;
-			if (setsockopt(listen_sock6, SOL_SOCKET, SO_REUSEADDR, &i, i.sizeof) == 0) {
-				memset(&sin6, 0, sin6.sizeof);
-				sin6.sin6_family = AF_INET6;
-				sin6.sin6_port = htons(31457);
-				if (bind(listen_sock6, cast(sockaddr*)&sin6, sin6.sizeof) == 0) {
-					if (listen(listen_sock6, 5) == 0) {
-						goto ipv6_success;
-					}
-				}
-			}
-			i = errno;
-			close(listen_sock6);
-			errno = i;
-			listen_sock6 = -1;
-		}
-	ipv6_success:
-	} else {
-		if (ipv6_only) {
-			fprintf(stderr, "ipv6_only specified but IPv6 support not available\n");
-			return 1;
-		}
-	}
-
-	version (HAVE_IPV6) {
-		bool cond = (listen_sock < 0) && (listen_sock6 < 0);
-	} else {
-		bool cond = listen_sock < 0;
-	}
-	if (cond) {
-		return 1;
-	}
-
-	return 0;
+	return runApplication();
 }
 
-int serverMain() {
-	int i;
-
-	if ((i = s_init()) != 0) {
-		return i;
-	}
-	while (!quit) {
-		check_sockets();
-	}
-	write_config();
-	if (listen_sock >= 0) {
-		close(listen_sock);
-	}
-	version (HAVE_IPV6) {
-		if (listen_sock6 >= 0) {
-			close(listen_sock6);
-		}
-	}
-	for (i = 0; i < 6; i++) {
-		close(player_socks[i]);
-	}
-	return 0;
-}
-
-void assumeNogc(alias Func, T...)(T xs) @nogc {
+deprecated auto assumeNogc(alias Func, T...)(T xs) @nogc {
 	import std.traits;
 
 	static auto assumeNogcPtr(T)(T f) if (isFunctionPointer!T || isDelegate!T) {
@@ -1014,16 +632,5 @@ void assumeNogc(alias Func, T...)(T xs) @nogc {
 		return cast(SetFunctionAttributes!(T, functionLinkage!T, attrs)) f;
 	}
 
-	assumeNogcPtr(&Func)(xs);
-}
-
-extern (C) void sigcatcher(int sig) nothrow @nogc @system {
-	if (sig == SIGHUP) {
-		assumeNogc!read_config();
-		signal(SIGHUP, &sigcatcher);
-		assumeNogc!(send_to_all!("winlist %s", char*))(winlist_str());
-	} else if (sig == SIGTERM || sig == SIGINT) {
-		quit = 1;
-		signal(sig, SIG_IGN);
-	}
+	return assumeNogcPtr(&Func)(xs);
 }

@@ -6,21 +6,17 @@
 	"description": "D port of tetrinet",
 	"copyright": "Copyright © 2017, Cameron",
 	"license": "proprietary",
-	"libs": ["ncurses"],
-	"versions": ["HAVE_IPV6"],
 	"dependencies": {
-		"ncurses": "~master"
+		"ncurses": "~master",
+		"easysettings": "~>0.0",
+		"vibe-d:core": "~>0.8",
+		"vibe-d:stream": "~>0.8"
 	},
 	"configurations": [
 		{
 			"name": "client",
 			"targetType": "executable",
 			"versions": ["client"]
-		},
-		{
-			"name": "client-xwin",
-			"targetType": "executable",
-			"versions": ["client", "xwin"]
 		},
 		{
 			"name": "server",

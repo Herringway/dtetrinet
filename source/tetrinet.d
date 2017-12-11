@@ -1,23 +1,25 @@
 module dtetrinet.tetrinet;
 
-import core.stdc.errno;
-import core.stdc.stdio;
-import core.stdc.stdlib;
-import core.stdc.string;
-import core.stdc.time;
+import core.time;
 
+deprecated import core.stdc.errno : errno;
+deprecated import core.stdc.stdio : sprintf, snprintf;
+deprecated import core.stdc.stdlib : exit;
+deprecated import core.stdc.string : memset, memmove, strlen, strerror, strcpy, strchr;
+deprecated import core.stdc.time : time;
+
+import dtetrinet.defs;
 import dtetrinet.version_;
 import dtetrinet.io;
 import dtetrinet.sockets;
 import dtetrinet.tetris;
 
-import std.stdio;
 import std.array : array;
 import std.string : toStringz;
+import std.stdio : stderr, writefln;
 import std.algorithm : map;
 
-
-extern (C) int strcasecmp(const char* s1, const char* s2) @nogc nothrow;
+import vibe.core.net;
 
 enum MAXWINLIST = 64;
 
@@ -31,12 +33,12 @@ __gshared {
 	int cast_shadow;
 
 	int my_playernum;
-	char* my_nick;
+	string my_nick;
 	WinInfo[MAXWINLIST] winlist;
-	int server_sock;
+	TCPConnection server_sock;
 	int dispmode;
-	char*[6] players;
-	char*[6] teams;
+	string[6] players;
+	string[6] teams;
 	int playing_game;
 	int not_playing_game;
 	int game_paused;
@@ -48,9 +50,6 @@ __gshared {
 enum FIELD_WIDTH = 12;
 enum FIELD_HEIGHT = 22;
 alias Field = char[FIELD_HEIGHT][FIELD_WIDTH];
-
-int log; /* Log network traffic to file? */
-char* logname; /* Log filename */
 
 struct WinInfo {
 	char[32] name;
@@ -95,43 +94,49 @@ enum K_F12 = 0x10F;
  * effect.
  */
 
-void parse(char* inbuf) {
-	char* cmd, s, t;
+void parse(string inbuf) {
+	import std.algorithm : findSplit, splitter;
+	import std.conv : parse;
+	import std.format : format;
+	import std.random : uniform;
+	import std.string : fromStringz, toStringz;
+	string cmd, s, t;
 
-	cmd = strtok(inbuf, " ");
+	auto splitOne = inbuf.findSplit(" ");
+	cmd = splitOne[0];
 
-	if (!cmd) {
+	if (cmd == "") {
 		return;
-
-	} else if (strcmp(cmd, "noconnecting") == 0) {
-		s = strtok(null, "");
-		if (!s) {
-			s = cast(char*) "Unknown".ptr;
+	} else if (cmd == "noconnecting") {
+		if (!splitOne) {
+			s = "Unknown";
+		} else {
+			s = splitOne[2];
 		}
 		/* XXX not to stderr, please! -- we need to stay running w/o server */
-		fprintf(stderr, "Server error: %s\n", s);
+		stderr.writefln!"Server error: %s"(s);
 		exit(1);
 
-	} else if (strcmp(cmd, "winlist") == 0) {
+	} else if (cmd == "winlist") {
 		int i = 0;
-		s = strtok(null, " ");
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
 		while (i < MAXWINLIST && s) {
-			t = strchr(s, ';');
+			t = strchr(s.toStringz, ';').fromStringz;
 			if (!t) {
 				break;
 			}
-			*t++ = 0;
-			if (*s == 't') {
+			if (s[0] == 't') {
 				winlist[i].team = 1;
 			} else {
 				winlist[i].team = 0;
 			}
-			s++;
-			strncpy(winlist[i].name.ptr, s, winlist[i].name.sizeof - 1);
-			winlist[i].name[winlist[i].name.sizeof - 1] = 0;
-			winlist[i].points = atoi(t);
-			if ((t = strchr(t, ';')) != null) {
-				winlist[i].games = atoi(t + 1);
+			//s++;
+			winlist[i].name = s;
+			winlist[i].points = parse!int(t);
+			if ((t = strchr(t.toStringz, ';').fromStringz) != null) {
+				auto x = t[1..$];
+				winlist[i].games = parse!int(x);
 			}
 			i++;
 		}
@@ -142,205 +147,227 @@ void parse(char* inbuf) {
 			io.setup_winlist();
 		}
 
-	} else if (strcmp(cmd, tetrifast ? ")#)(!@(*3" : "playernum") == 0) {
-		s = strtok(null, " ");
-		if (s) {
-			my_playernum = atoi(s);
+	} else if (cmd == (tetrifast ? ")#)(!@(*3" : "playernum")) {
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
+		if (splitTwo) {
+			my_playernum = parse!int(s);
 		}
 		/* Note: players[my_playernum-1] is set in init() */
 		/* But that doesn't work when joining other channel. */
-		players[my_playernum - 1] = strdup(my_nick);
+		players[my_playernum] = my_nick;
 
-	} else if (strcmp(cmd, "playerjoin") == 0) {
+	} else if (cmd == "playerjoin") {
 		int player;
-		char[1024] buf;
+		//char[1024] buf;
 
-		s = strtok(null, " ");
-		t = strtok(null, "");
-		if (!s || !t) {
+		auto splitTwo = splitOne[2].findSplit(" ");
+		if (!splitOne || !splitTwo) {
 			return;
 		}
-		player = atoi(s) - 1;
+		s = splitTwo[0];
+		t = splitTwo[2];
+		player = parse!int(s);
 		if (player < 0 || player > 5) {
 			return;
 		}
-		players[player] = strdup(t);
+		players[player] = t;
 		if (teams[player]) {
-			free(teams[player]);
 			teams[player] = null;
 		}
-		snprintf(buf.ptr, buf.sizeof, "*** %s is Now Playing", t);
-		io.draw_text(BUFFER_PLINE, buf.ptr);
+		auto buf = format!"*** %s is Now Playing"(t);
+		io.draw_text(BUFFER_PLINE, buf);
 		if (dispmode == MODE_FIELDS) {
 			io.setup_fields();
 		}
 
-	} else if (strcmp(cmd, "playerleave") == 0) {
+	} else if (cmd == "playerleave") {
 		int player;
-		char[1024] buf;
 
-		s = strtok(null, " ");
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
 		if (!s) {
 			return;
 		}
-		player = atoi(s) - 1;
+		player = parse!int(s);
 		if (player < 0 || player > 5 || !players[player]) {
 			return;
 		}
-		snprintf(buf.ptr, buf.sizeof, "*** %s has Left", players[player]);
-		io.draw_text(BUFFER_PLINE, buf.ptr);
-		free(players[player]);
+		auto buf = format!"*** %s has Left"(players[player]);
+		io.draw_text(BUFFER_PLINE, buf);
 		players[player] = null;
 		if (dispmode == MODE_FIELDS) {
 			io.setup_fields();
 		}
 
-	} else if (strcmp(cmd, "team") == 0) {
+	} else if (cmd == "team") {
 		int player;
-		char[1024] buf;
 
-		s = strtok(null, " ");
-		t = strtok(null, "");
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
 		if (!s) {
 			return;
 		}
-		player = atoi(s) - 1;
+		t = splitTwo[2];
+		player = parse!int(s);
 		if (player < 0 || player > 5 || !players[player]) {
 			return;
 		}
-		if (teams[player]) {
-			free(teams[player]);
-		}
 		if (t) {
-			teams[player] = strdup(t);
+			teams[player] = t;
 		} else {
 			teams[player] = null;
 		}
+		string buf;
 		if (t) {
-			snprintf(buf.ptr, buf.sizeof, "*** %s is Now on Team %s", players[player], t);
+			buf = format!"*** %s is Now on Team %s"(players[player], t);
 		} else {
-			snprintf(buf.ptr, buf.sizeof, "*** %s is Now Alone", players[player]);
+			buf = format!"*** %s is Now Alone"(players[player]);
 		}
-		io.draw_text(BUFFER_PLINE, buf.ptr);
+		io.draw_text(BUFFER_PLINE, buf);
 
-	} else if (strcmp(cmd, "pline") == 0) {
-		int playernum;
-		char[1024] buf;
-		char* name;
-
-		s = strtok(null, " ");
-		t = strtok(null, "");
-		if (!s) {
+	} else if (cmd == "pline") {
+		if (!splitOne) {
 			return;
 		}
-		if (!t) {
-			t = cast(char*) "".ptr;
+		int playernum;
+		string name;
+
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
+		if (!splitTwo) {
+			t = "";
+		} else {
+			t = splitTwo[2];
 		}
-		playernum = atoi(s) - 1;
+		playernum = parse!int(s);
 		if (playernum == -1) {
-			name = cast(char*) "Server".ptr;
+			name = "Server";
 		} else {
 			if (playernum < 0 || playernum > 5 || !players[playernum]) {
 				return;
 			}
 			name = players[playernum];
 		}
-		snprintf(buf.ptr, buf.sizeof, "<%s> %s", name, t);
-		io.draw_text(BUFFER_PLINE, buf.ptr);
+		auto buf = format!"<%s> %s"(name, t);
+		io.draw_text(BUFFER_PLINE, buf);
 
-	} else if (strcmp(cmd, "plineact") == 0) {
-		int playernum;
-		char[1024] buf;
-		char* name;
-
-		s = strtok(null, " ");
-		t = strtok(null, "");
-		if (!s) {
+	} else if (cmd == "plineact") {
+		if (!splitOne) {
 			return;
 		}
-		if (!t) {
-			t = cast(char*) "".ptr;
+		int playernum;
+		//char[1024] buf;
+		string name;
+
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
+		if (!splitTwo) {
+			t = "";
+		} else {
+			t = splitTwo[2];
 		}
-		playernum = atoi(s) - 1;
+		playernum = parse!int(s);
 		if (playernum == -1) {
-			name = cast(char*) "Server".ptr;
+			name = "Server";
 		} else {
 			if (playernum < 0 || playernum > 5 || !players[playernum]) {
 				return;
 			}
 			name = players[playernum];
 		}
-		snprintf(buf.ptr, buf.sizeof, "* %s %s", name, t);
-		io.draw_text(BUFFER_PLINE, buf.ptr);
+		auto buf = format!"* %s %s"(name, t);
+		io.draw_text(BUFFER_PLINE, buf);
 
-	} else if (strcmp(cmd, tetrifast ? "*******" : "newgame") == 0) {
+	} else if (cmd == (tetrifast ? "*******" : "newgame")) {
 		int i;
-		s = strtok(null, " ");
-		if (s) {
+		auto split = splitOne[2].splitter(" ");
+		if (split.empty) {
+			return;
 		}
+		s = split.front;
+		split.popFront;
 		/* stack height */
-		s = strtok(null, " ");
-		if (s) {
-			initial_level = atoi(s);
+		if (split.empty) {
+			return;
 		}
-		s = strtok(null, " ");
-		if (s) {
-			lines_per_level = atoi(s);
+		s = split.front;
+		split.popFront;
+		initial_level = parse!int(s);
+		if (split.empty) {
+			return;
 		}
-		s = strtok(null, " ");
-		if (s) {
-			level_inc = atoi(s);
+		s = split.front;
+		split.popFront;
+		lines_per_level = parse!int(s);
+		if (split.empty) {
+			return;
 		}
-		s = strtok(null, " ");
-		if (s) {
-			special_lines = atoi(s);
+		s = split.front;
+		split.popFront;
+		level_inc = parse!int(s);
+		if (split.empty) {
+			return;
 		}
-		s = strtok(null, " ");
-		if (s) {
-			special_count = atoi(s);
+		s = split.front;
+		split.popFront;
+		special_lines = parse!int(s);
+
+		if (split.empty) {
+			return;
 		}
-		s = strtok(null, " ");
-		if (s) {
-			special_capacity = atoi(s);
-			if (special_capacity > MAX_SPECIALS) {
-				special_capacity = MAX_SPECIALS;
+		s = split.front;
+		split.popFront;
+		special_count = parse!int(s);
+		if (split.empty) {
+			return;
+		}
+		s = split.front;
+		split.popFront;
+		special_capacity = parse!int(s);
+		if (special_capacity > MAX_SPECIALS) {
+			special_capacity = MAX_SPECIALS;
+		}
+		if (split.empty) {
+			return;
+		}
+		s = split.front;
+		split.popFront;
+		memset(piecefreq.ptr, 0, piecefreq.sizeof);
+		foreach (chr; s) {
+			i = chr - '1';
+			if (i >= 0 && i < 7) {
+				piecefreq[i]++;
 			}
 		}
-		s = strtok(null, " ");
-		if (s) {
-			memset(piecefreq.ptr, 0, piecefreq.sizeof);
-			while (*s) {
-				i = *s - '1';
-				if (i >= 0 && i < 7) {
-					piecefreq[i]++;
-				}
-				s++;
+		if (split.empty) {
+			return;
+		}
+		s = split.front;
+		split.popFront;
+		memset(specialfreq.ptr, 0, specialfreq.sizeof);
+		foreach (chr; s) {
+			i = chr - '1';
+			if (i >= 0 && i < 9) {
+				specialfreq[i]++;
 			}
 		}
-		s = strtok(null, " ");
-		if (s) {
-			memset(specialfreq.ptr, 0, specialfreq.sizeof);
-			while (*s) {
-				i = *s - '1';
-				if (i >= 0 && i < 9) {
-					specialfreq[i]++;
-				}
-				s++;
-			}
+		if (split.empty) {
+			return;
 		}
-		s = strtok(null, " ");
-		if (s) {
-			level_average = atoi(s);
+		s = split.front;
+		split.popFront;
+		level_average = parse!int(s);
+		if (split.empty) {
+			return;
 		}
-		s = strtok(null, " ");
-		if (s) {
-			old_mode = atoi(s);
-		}
+		s = split.front;
+		old_mode = parse!int(s);
 		lines = 0;
 		for (i = 0; i < 6; i++) {
 			levels[i] = initial_level;
 		}
-		memset(&fields[my_playernum - 1], 0, Field.sizeof);
+		memset(&fields[my_playernum], 0, Field.sizeof);
 		specials[0] = -1;
 		io.clear_text(BUFFER_GMSG);
 		io.clear_text(BUFFER_ATTDEF);
@@ -349,28 +376,28 @@ void parse(char* inbuf) {
 		game_paused = 0;
 		io.draw_text(BUFFER_PLINE, "*** The Game Has Started");
 
-	} else if (strcmp(cmd, "ingame") == 0) {
+	} else if (cmd == "ingame") {
 		/* Sent when a player connects in the middle of a game */
 		int x, y;
 		char[1024] buf;
-		char* s2;
+		string s2;
 
-		s2 = buf.ptr + sprintf(buf.ptr, "f %d ", my_playernum);
+		s2 ~= (buf.ptr + sprintf(buf.ptr, "f %d ", my_playernum))[0];
 		for (y = 0; y < FIELD_HEIGHT; y++) {
 			for (x = 0; x < FIELD_WIDTH; x++) {
-				fields[my_playernum - 1][y][x] = cast(char)(rand() % 5 + 1);
-				*s2++ = cast(char)('0' + fields[my_playernum - 1][y][x]);
+				fields[my_playernum][y][x] = cast(char)(uniform(0, 5) + 1);
+				s2 ~= cast(char)('0' + fields[my_playernum][y][x]);
 			}
 		}
-		*s2 = 0;
-		sputs(buf.ptr, server_sock);
+		server_sock.write(buf[].idup);
 		playing_game = 0;
 		not_playing_game = 1;
 
-	} else if (strcmp(cmd, "pause") == 0) {
-		s = strtok(null, " ");
-		if (s) {
-			game_paused = atoi(s);
+	} else if (cmd == "pause") {
+		auto splitTwo = splitOne[2].findSplit(" ");
+		s = splitTwo[0];
+		if (splitOne) {
+			game_paused = parse!int(s);
 		}
 		if (game_paused) {
 			io.draw_text(BUFFER_PLINE, "*** The Game Has Been Paused");
@@ -380,7 +407,7 @@ void parse(char* inbuf) {
 			io.draw_text(BUFFER_GMSG, "*** The Game Has Been Unpaused");
 		}
 
-	} else if (strcmp(cmd, "endgame") == 0) {
+	} else if (cmd == "endgame") {
 		playing_game = 0;
 		not_playing_game = 0;
 		memset(fields.ptr, 0, fields.sizeof);
@@ -397,15 +424,18 @@ void parse(char* inbuf) {
 			}
 		}
 
-	} else if (strcmp(cmd, "playerwon") == 0) {
+	} else if (cmd == "playerwon") {
 		/* Syntax: playerwon # -- sent when all but one player lose */
 
-	} else if (strcmp(cmd, "playerlost") == 0) {
+	} else if (cmd == "playerlost") {
 		/* Syntax: playerlost # -- sent after playerleave on disconnect
 	 *     during a game, or when a player loses (sent by the losing
 	 *     player and from the server to all other players */
 
-	} else if (strcmp(cmd, "f") == 0) { /* field */
+	} else if (cmd == "f") { /* field */
+		if (!splitOne) {
+			return;
+		}
 		int player, x, y, tile;
 
 		/* This looks confusing, but what it means is, ignore this message
@@ -413,51 +443,50 @@ void parse(char* inbuf) {
 		if (!playing_game && !not_playing_game) {
 			return;
 		}
-		s = strtok(null, " ");
-		if (!s) {
+		auto splitTwo = splitOne[2].findSplit(" ");
+		if (!splitTwo) {
 			return;
 		}
-		player = atoi(s);
+		s = splitTwo[0];
+		player = parse!int(s);
 		player--;
-		s = strtok(null, "");
-		if (!s) {
-			return;
-		}
-		if (*s >= '0') {
+		s = splitTwo[2];
+		if (s[0] >= '0') {
 			/* Set field directly */
-			char* ptr = cast(char*) fields[player];
-			while (*s) {
-				if (*s <= '5') {
-					*ptr++ = cast(char)((*s++) - '0');
+			foreach (i, chr; s) {
+				auto p_x = i/FIELD_WIDTH;
+				auto p_y = i%FIELD_WIDTH;
+				if (chr <= '5') {
+					fields[player][p_y][p_x] = cast(char)(chr - '0');
 				}
 				else
-					switch (*s++) {
+					switch (chr) {
 					case 'a':
-						*ptr++ = 6 + SPECIAL_A;
+						fields[player][p_y][p_x] = 6 + SPECIAL_A;
 						break;
 					case 'b':
-						*ptr++ = 6 + SPECIAL_B;
+						fields[player][p_y][p_x] = 6 + SPECIAL_B;
 						break;
 					case 'c':
-						*ptr++ = 6 + SPECIAL_C;
+						fields[player][p_y][p_x] = 6 + SPECIAL_C;
 						break;
 					case 'g':
-						*ptr++ = 6 + SPECIAL_G;
+						fields[player][p_y][p_x] = 6 + SPECIAL_G;
 						break;
 					case 'n':
-						*ptr++ = 6 + SPECIAL_N;
+						fields[player][p_y][p_x] = 6 + SPECIAL_N;
 						break;
 					case 'o':
-						*ptr++ = 6 + SPECIAL_O;
+						fields[player][p_y][p_x] = 6 + SPECIAL_O;
 						break;
 					case 'q':
-						*ptr++ = 6 + SPECIAL_Q;
+						fields[player][p_y][p_x] = 6 + SPECIAL_Q;
 						break;
 					case 'r':
-						*ptr++ = 6 + SPECIAL_R;
+						fields[player][p_y][p_x] = 6 + SPECIAL_R;
 						break;
 					case 's':
-						*ptr++ = 6 + SPECIAL_S;
+						fields[player][p_y][p_x] = 6 + SPECIAL_S;
 						break;
 					default:
 						assert(0);
@@ -466,61 +495,64 @@ void parse(char* inbuf) {
 		} else {
 			/* Set specific locations on field */
 			tile = 0;
-			while (*s) {
-				if (*s < '0') {
-					tile = *s - '!';
+			foreach (chr; s) {
+				if (chr < '0') {
+					tile = chr - '!';
 				} else {
-					x = *s - '3';
-					y = (*++s) - '3';
+					x = chr - '3';
+					y = chr - '3';
 					fields[player][y][x] = cast(char) tile;
 				}
-				s++;
 			}
 		}
-		if (player == my_playernum - 1) {
+		if (player == my_playernum) {
 			io.draw_own_field();
 		} else {
 			io.draw_other_field(player + 1);
 		}
-	} else if (strcmp(cmd, "lvl") == 0) {
+	} else if (cmd == "lvl") {
+		if (!splitOne) {
+			return;
+		}
 		int player;
 
-		s = strtok(null, " ");
-		if (!s) {
+		auto splitTwo = splitOne[2].findSplit(" ");
+		if (!splitTwo) {
 			return;
 		}
-		player = atoi(s) - 1;
-		s = strtok(null, "");
-		if (!s) {
-			return;
-		}
-		levels[player] = atoi(s);
+		s = splitTwo[0];
+		player = parse!int(s);
+		s = splitTwo[2];
+		levels[player] = parse!int(s);
 
-	} else if (strcmp(cmd, "sb") == 0) {
+	} else if (cmd == "sb") {
+		if (!splitOne) {
+			return;
+		}
 		int from, to;
-		char* type;
+		string type;
 
-		s = strtok(null, " ");
-		if (!s) {
+		auto splitTwo = splitOne[2].findSplit(" ");
+		if (!splitTwo) {
 			return;
 		}
-		to = atoi(s);
-		type = strtok(null, " ");
-		if (!type) {
+		s = splitTwo[0];
+		to = parse!int(s);
+		auto splitThree = splitTwo[2].findSplit(" ");
+		if (!splitThree) {
 			return;
 		}
-		s = strtok(null, " ");
-		if (!s) {
-			return;
-		}
-		from = atoi(s);
+		type = splitThree[0];
+		auto splitFour = splitThree[2].findSplit(" ");
+		s = splitFour[0];
+		from = parse!int(s);
 		do_special(type, from, to);
 
-	} else if (strcmp(cmd, "gmsg") == 0) {
-		s = strtok(null, "");
-		if (!s) {
+	} else if (cmd == "gmsg") {
+		if (!splitOne) {
 			return;
 		}
+		s = splitOne[2];
 		io.draw_text(BUFFER_GMSG, s);
 
 	}
@@ -529,19 +561,16 @@ void parse(char* inbuf) {
 /*************************************************************************/
 /*************************************************************************/
 
-__gshared char[512] partyline_buffer;
-__gshared int partyline_pos;
+__gshared string partyline_buffer;
+__gshared size_t partyline_pos;
 
 /*************************************************************************/
 
 /* Add a character to the partyline buffer. */
 
 void partyline_input(int c) {
-	if (partyline_pos < partyline_buffer.sizeof - 1) {
-		memmove(partyline_buffer.ptr + partyline_pos + 1, partyline_buffer.ptr + partyline_pos, strlen(partyline_buffer.ptr + partyline_pos) + 1);
-		partyline_buffer[partyline_pos++] = cast(char) c;
-		io.draw_partyline_input(partyline_buffer.ptr, partyline_pos);
-	}
+	partyline_buffer ~= cast(char) c;
+	io.draw_partyline_input(partyline_buffer, partyline_pos);
 }
 
 /*************************************************************************/
@@ -549,10 +578,8 @@ void partyline_input(int c) {
 /* Delete the current character from the partyline buffer. */
 
 void partyline_delete() {
-	if (partyline_buffer[partyline_pos]) {
-		memmove(partyline_buffer.ptr + partyline_pos, partyline_buffer.ptr + partyline_pos + 1, strlen(partyline_buffer.ptr + partyline_pos) - 1 + 1);
-		io.draw_partyline_input(partyline_buffer.ptr, partyline_pos);
-	}
+	gmsg_buffer = gmsg_buffer[0..gmsg_pos]~gmsg_buffer[gmsg_pos..$];
+	io.draw_partyline_input(partyline_buffer, partyline_pos);
 }
 
 /*************************************************************************/
@@ -572,8 +599,8 @@ void partyline_backspace() {
 
 void partyline_kill() {
 	partyline_pos = 0;
-	partyline_buffer = partyline_buffer.init;
-	io.draw_partyline_input(partyline_buffer.ptr, partyline_pos);
+	partyline_buffer = null;
+	io.draw_partyline_input(partyline_buffer, partyline_pos);
 }
 
 /*************************************************************************/
@@ -585,16 +612,16 @@ void partyline_kill() {
 void partyline_move(int how) {
 	if (how == -2) {
 		partyline_pos = 0;
-		io.draw_partyline_input(partyline_buffer.ptr, partyline_pos);
+		io.draw_partyline_input(partyline_buffer, partyline_pos);
 	} else if (how == -1 && partyline_pos > 0) {
 		partyline_pos--;
-		io.draw_partyline_input(partyline_buffer.ptr, partyline_pos);
+		io.draw_partyline_input(partyline_buffer, partyline_pos);
 	} else if (how == 1 && partyline_buffer[partyline_pos]) {
 		partyline_pos++;
-		io.draw_partyline_input(partyline_buffer.ptr, partyline_pos);
+		io.draw_partyline_input(partyline_buffer, partyline_pos);
 	} else if (how == 2) {
 		partyline_pos = cast(int) strlen(partyline_buffer.ptr);
-		io.draw_partyline_input(partyline_buffer.ptr, partyline_pos);
+		io.draw_partyline_input(partyline_buffer, partyline_pos);
 	}
 }
 
@@ -603,94 +630,96 @@ void partyline_move(int how) {
 /* Send the input line to the server. */
 
 void partyline_enter() {
-	char[1024] buf;
+	import std.algorithm : startsWith;
+	import std.format : format;
+	import std.string : icmp;
 
 	if (partyline_buffer.ptr) {
-		if (strncasecmp(partyline_buffer.ptr, "/me ", 4) == 0) {
-			sockprintf(server_sock, "plineact %d %s", my_playernum, partyline_buffer.ptr + 4);
-			snprintf(buf.ptr, buf.sizeof, "* %s %s", players[my_playernum - 1], partyline_buffer.ptr + 4);
-			io.draw_text(BUFFER_PLINE, buf.ptr);
-		} else if (strcasecmp(partyline_buffer.ptr, "/start") == 0) {
-			sockprintf(server_sock, "startgame 1 %d", my_playernum);
-		} else if (strcasecmp(partyline_buffer.ptr, "/end") == 0) {
-			sockprintf(server_sock, "startgame 0 %d", my_playernum);
-		} else if (strcasecmp(partyline_buffer.ptr, "/pause") == 0) {
-			sockprintf(server_sock, "pause 1 %d", my_playernum);
-		} else if (strcasecmp(partyline_buffer.ptr, "/unpause") == 0) {
-			sockprintf(server_sock, "pause 0 %d", my_playernum);
-		} else if (strncasecmp(partyline_buffer.ptr, "/team", 5) == 0) {
-			if (strlen(partyline_buffer.ptr) == 5) {
-				strcpy(partyline_buffer.ptr + 5, " "); /* make it "/team " */
+		if (partyline_buffer[].startsWith("/me ")) {
+			sockprintf!"plineact %d %s"(server_sock, my_playernum, partyline_buffer.ptr + 4);
+			auto str = format!"* %s %s"(players[my_playernum], partyline_buffer[4..$]);
+			io.draw_text(BUFFER_PLINE, str);
+		} else if (icmp(partyline_buffer, "/start") == 0) {
+			sockprintf!"startgame 1 %d"(server_sock, my_playernum);
+		} else if (icmp(partyline_buffer, "/end") == 0) {
+			sockprintf!"startgame 0 %d"(server_sock, my_playernum);
+		} else if (icmp(partyline_buffer, "/pause") == 0) {
+			sockprintf!"pause 1 %d"(server_sock, my_playernum);
+		} else if (icmp(partyline_buffer, "/unpause") == 0) {
+			sockprintf!"pause 0 %d"(server_sock, my_playernum);
+		} else if (partyline_buffer[].startsWith("/team")) {
+			if (partyline_buffer.length == 5) {
+				partyline_buffer ~= " "; /* make it "/team " */
 			}
-			sockprintf(server_sock, "team %d %s", my_playernum, partyline_buffer.ptr + 6);
+			sockprintf!"team %d %s"(server_sock, my_playernum, partyline_buffer.ptr + 6);
 			if (partyline_buffer[6]) {
-				if (teams[my_playernum - 1]) {
-					free(teams[my_playernum - 1]);
-				}
-				teams[my_playernum - 1] = strdup(partyline_buffer.ptr + 6);
-				snprintf(buf.ptr, buf.sizeof, "*** %s is Now on Team %s", players[my_playernum - 1], partyline_buffer.ptr + 6);
-				io.draw_text(BUFFER_PLINE, buf.ptr);
+				teams[my_playernum] = partyline_buffer[6..$].idup;
+				auto str = format!"*** %s is Now on Team %s"(players[my_playernum], partyline_buffer[6..$]);
+				io.draw_text(BUFFER_PLINE, str);
 			} else {
-				if (teams[my_playernum - 1]) {
-					free(teams[my_playernum - 1]);
-				}
-				teams[my_playernum - 1] = null;
-				snprintf(buf.ptr, buf.sizeof, "*** %s is Now Alone", players[my_playernum - 1]);
-				io.draw_text(BUFFER_PLINE, buf.ptr);
+				teams[my_playernum] = null;
+				auto str = format!"*** %s is Now Alone"(players[my_playernum]);
+				io.draw_text(BUFFER_PLINE, str);
 			}
 		} else {
-			sockprintf(server_sock, "pline %d %s", my_playernum, partyline_buffer.ptr);
+			sockprintf!"pline %d %s"(server_sock, my_playernum, partyline_buffer.ptr);
 			if (partyline_buffer[0] != '/' || partyline_buffer[1] == 0 || partyline_buffer[1] == ' ') {
 				/* We do not show server-side commands. */
-				snprintf(buf.ptr, buf.sizeof, "<%s> %s", players[my_playernum - 1], partyline_buffer.ptr);
-				io.draw_text(BUFFER_PLINE, buf.ptr);
+				auto str = format!"<%s> %s"(players[my_playernum], partyline_buffer);
+				io.draw_text(BUFFER_PLINE, str);
 			}
 		}
 		partyline_pos = 0;
 		partyline_buffer = partyline_buffer.init;
-		io.draw_partyline_input(partyline_buffer.ptr, partyline_pos);
+		io.draw_partyline_input(partyline_buffer, partyline_pos);
 	}
 }
 
 /*************************************************************************/
 /*************************************************************************/
 
-void help() {
-	import std.stdio;
 
-	stderr.writeln(
-		"Tetrinet " ~ VERSION ~ " - Text-mode tetrinet client\n"~
-		"\n"~
-		"Usage: tetrinet [OPTION]... NICK SERVER\n"~
-		"\n"~
-		"Options (see README for details):\n"~
-		"  -fancy       Use \"fancy\" TTY graphics.\n"~
-		"  -fast        Connect to the server in the tetrifast mode.\n"~
-		"  -log <file>  Log network traffic to the given file.\n"~
-		"  -noshadow    Do not make the pieces cast shadow.\n"~
-		"  -noslide     Do not allow pieces to \"slide\" after being dropped\n"~
-		"               with the spacebar.\n"~
-		"  -server      Start the server instead of the client.\n"~
-		"  -shadow      Make the pieces cast shadow. Can speed up gameplay\n"~
-		"               considerably, but it can be considered as cheating by\n"~
-		"               some people since some other tetrinet clients lack this.\n"~
-		"  -slide       Opposite of -noslide; allows pieces to \"slide\" after\n"~
-		"               being dropped.  If both -slide and -noslide are given,\n"~
-		"               -slide takes precedence.\n"~
-		"  -windows     Behave as much like the Windows version of Tetrinet as\n"~
-		"               possible. Implies -noslide and -noshadow.\n"
-	);
+string genLoginString(string nick, ubyte[4] ip, ubyte rand, string type = "tetrifaster", string ver = "1.13") @safe pure {
+	import std.format : format;
+	import std.range : enumerate;
+	import std.utf : byCodeUnit;
+
+	auto nickmsg = format!"%s %s %s"(type, nick, ver);
+	//string iphashbuf = format! "%d"(ip[0] * 54 + ip[1] * 41 + ip[2] * 29 + ip[3] * 17);
+	//ubyte[] buf = [rand];
+
+	//foreach (i, chr; nickmsg.byCodeUnit.enumerate) {
+	//	buf ~= (((buf[i] & 0xFF) + (chr & 0xFF)) % 255) ^ iphashbuf[i % iphashbuf.length];
+	//}
+
+	//return format!"%(%02X%)"(buf);
+	return nickmsg;
+}
+///
+@safe pure unittest {
+	assert(genLoginString("TestUser", [209, 52, 144, 98], 128) == "80C512B4114A81DB7DC71DBEE70E4588CD1ABF13B5E42F6F96F9");
 }
 
-int init(int ac, char** av) {
+int clientMain(string[] args) {
+	import std.string : format;
+	import std.getopt : defaultGetoptPrinter, getopt;
+
+	import vibe.stream.operations : readLine;
+
+	void log(string path) {
+		import std.experimental.logger;
+		auto logger = new MultiLogger();
+		auto fileLogger = new FileLogger(path);
+		logger.insertLogger("console", sharedLog);
+		logger.insertLogger("file", fileLogger);
+		sharedLog = logger;
+	}
+
 	int i;
-	char* nick = null;
-	char* server = null;
-	char[1024] buf;
-	char[1024] nickmsg;
+	string nick = null;
+	string server = null;
 	ubyte[4] ip;
 	char[32] iphashbuf;
-	int len;
 	int slide = 0; /* Do we definitely want to slide? (-slide) */
 
 	version (xwin) {
@@ -704,119 +733,73 @@ int init(int ac, char** av) {
 	} else {
 		io = &tty_interface; /* because Xwin isn't done yet */
 	}
-	srand(cast(uint) time(null));
 	init_shapes();
+	auto help = getopt(
+		args,
+		"fancy", `Use "fancy" TTY graphics.`, &fancy,
+		"log", "Log network traffic to file.", &log,
+		"noslide", `Do not allow pieces to "slide" after being dropped with the spacebar.`, &noslide,
+		"shadow", "Make the pieces cast a shadow. Can speed up gameplay considerably, but it can be considered as cheating by some people since some other tetrinet clients lack this.", &cast_shadow,
+		"fast", "Connect to the server in the tetrifast mode.", &tetrifast
+	);
 
-	for (i = 1; i < ac; i++) {
-		if (*av[i] == '-') {
-			if (strcmp(av[i], "-fancy") == 0) {
-				fancy = 1;
-			} else if (strcmp(av[i], "-log") == 0) {
-				log = 1;
-				i++;
-				if (i >= ac) {
-					fprintf(stderr, "Option -log requires an argument\n");
-					return 1;
-				}
-				logname = av[i];
-			} else if (strcmp(av[i], "-noslide") == 0) {
-				noslide = 1;
-			} else if (strcmp(av[i], "-noshadow") == 0) {
-				cast_shadow = 0;
-			} else if (strcmp(av[i], "-shadow") == 0) {
-				cast_shadow = 1;
-			} else if (strcmp(av[i], "-slide") == 0) {
-				slide = 1;
-			} else if (strcmp(av[i], "-windows") == 0) {
-				windows_mode = 1;
-				noslide = 1;
-				cast_shadow = 0;
-			} else if (strcmp(av[i], "-fast") == 0) {
-				tetrifast = 1;
-			} else {
-				fprintf(stderr, "Unknown option %s\n", av[i]);
-				help();
-				return 1;
-			}
-		} else if (!nick) {
-			my_nick = nick = av[i];
-		} else if (!server) {
-			server = av[i];
-		} else {
-			help();
-			return 1;
-		}
+	if ((args.length != 3) || help.helpWanted) {
+		defaultGetoptPrinter(
+			"Tetrinet " ~ VERSION ~ " - Text-mode tetrinet client\n"~
+			"\n"~
+			"Usage: "~args[0]~" [OPTION]... NICK SERVER",
+			 help.options
+		 );
+		return 1;
 	}
+	nick = args[1];
+	server = args[2];
+
 	if (slide) {
 		noslide = 0;
 	}
-	if (!server) {
-		help();
-		return 1;
-	}
-	if (strlen(nick) > 63) { /* put a reasonable limit on nick length */
-		nick[63] = 0;
+	if (nick.length > 63) { /* put a reasonable limit on nick length */
+		nick = nick[0..63];
 	}
 
-	if ((server_sock = conn(server, 31457, cast(char[4]) ip)) < 0) {
-		fprintf(stderr, "Couldn't connect to server %s: %s\n", server, strerror(errno));
+	try {
+		server_sock = connectTCP(server, 31457);
+	} catch (Exception e) {
+		stderr.writefln!"Couldn't connect to server %s: %s"(server, e.msg);
 		return 1;
 	}
-	sprintf(nickmsg.ptr, "tetri%s %s 1.13", tetrifast ? "faster".ptr : "sstart".ptr, nick);
-	sprintf(iphashbuf.ptr, "%d", ip[0] * 54 + ip[1] * 41 + ip[2] * 29 + ip[3] * 17);
-	/* buf[0] does not need to be initialized for this algorithm */
-	len = cast(int) strlen(nickmsg.ptr);
-	for (i = 0; i < len; i++) {
-		buf[i + 1] = (((buf[i] & 0xFF) + (nickmsg[i] & 0xFF)) % 255) ^ iphashbuf[i % strlen(iphashbuf.ptr)];
-	}
-	len++;
-	for (i = 0; i < len; i++) {
-		sprintf(nickmsg.ptr + i * 2, "%02X", buf[i] & 0xFF);
-	}
-	sputs(nickmsg.ptr, server_sock);
+	server_sock.sockprintf!"%s"(genLoginString(nick, ip, 255, tetrifast ? "tetrifaster" : "tetrisstart", "1.13"));
 
 	do {
-		if (!sgets(buf.ptr, buf.sizeof, server_sock)) {
-			fprintf(stderr, "Server %s closed connection\n", server);
-			disconn(server_sock);
-			return 1;
-		}
-		parse(buf.ptr);
-	}
-	while (my_playernum < 0);
-	sockprintf(server_sock, "team %d ", my_playernum);
+		//char[1024] buf;
+		//if (!sgets(buf.ptr, buf.sizeof, server_sock)) {
+		//	stderr.writefln!"Server %s closed connection"(server);
+		//	server_sock.close();
+		//	return 1;
+		//}
+		parse(cast(string)server_sock.readLine());
+	} while (my_playernum < 0);
+	sockprintf!"team %d "(server_sock, my_playernum);
 
-	players[my_playernum - 1] = strdup(nick);
+	players[my_playernum] = nick;
 	dispmode = MODE_PARTYLINE;
 	io.screen_setup();
 	io.setup_partyline();
 
-	return 0;
-}
-
-int clientMain(string[] args) {
-	immutable(char)*[] argptrs = args.map!toStringz.array;
-
-	immutable(char)** av = argptrs.ptr;
-	int ac = cast(int) args.length;
-	int i;
-
-	if ((i = init(ac, av)) != 0) {
-		return i;
-	}
-
 	for (;;) {
-		int timeout;
+		Duration timeout;
 		if (playing_game && !game_paused) {
 			timeout = tetris_timeout();
 		} else {
-			timeout = -1;
+			timeout = -1.msecs;
 		}
 		i = io.wait_for_input(timeout);
+		import std.experimental.logger;
+		trace(i);
 		if (i == -1) {
-			char[1024] buf;
-			if (sgets(buf.ptr, cast(int) buf.sizeof, server_sock)) {
-				parse(buf.ptr);
+			//char[1024] buf;
+			if (auto str = cast(string)server_sock.readLine()) {
+				parse(str);
 			} else {
 				io.draw_text(BUFFER_PLINE, "*** Disconnected from Server");
 				break;
@@ -867,6 +850,6 @@ int clientMain(string[] args) {
 		}
 	}
 
-	disconn(server_sock);
+	server_sock.close();
 	return 0;
 }

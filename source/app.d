@@ -1,11 +1,14 @@
 import dtetrinet.tetrinet;
 import dtetrinet.server;
 
-int main(string[] args) {
-	version (client) {
-		return clientMain(args);
-	}
-	version(server) {
-		return serverMain();
+version(unittest) {
+} else {
+	int main(string[] args) {
+		version (client) {
+			return clientMain(args);
+		}
+		version(server) {
+			return serverMain();
+		}
 	}
 }
